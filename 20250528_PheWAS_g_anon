@@ -859,7 +859,7 @@ df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% mutate (beta_bi
 df_lollipop_demog_sanscognit$p_fdr<-p.adjust(df_lollipop_demog_sanscognit$p, method = "fdr", n=length(df_lollipop_demog_sanscognit$p))
 
 
-# Remove spurious associations, see 20230919_g_phewas slide deck for further details
+# Remove spurious associations
 df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% filter (var!="DHLQ495_Op4_9" & var !="DHLQ610_L1_Female_7") 
 
 # Export spreadsheet before insertion of empty rows
@@ -1502,7 +1502,7 @@ df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% mutate (beta_bi
 df_lollipop_demog_sanscognit$p_fdr<-p.adjust(df_lollipop_demog_sanscognit$p, method = "fdr", n=length(df_lollipop_demog_sanscognit$p))
 
 
-# Remove spurious associations, see 20230919_g_phewas slide deck for further details
+# Remove spurious associations
 df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% filter (var!="DHLQ495_Op4_9" & var !="DHLQ610_L1_Female_7") 
 
 # Export spreadsheet before insertion of empty rows
@@ -1511,7 +1511,7 @@ names(data_dictionary)[1] <- "var"
 data_dictionary <- data_dictionary %>% filter (suitable_for_phewas=="yes") %>% select (-suitable_for_phewas)
 
 df_lollipop_demog_sanscognit_export <- df_lollipop_demog_sanscognit %>% left_join (.,data_dictionary)
-write.csv(df_lollipop_demog_sanscognit_export,"PheWAS_reacttime_demog_quadint_PCances_20240930_table.csv",row.names=F)
+write.csv(df_lollipop_demog_sanscognit_export,"PheWAS_reacttime_demog_quadint_PCances_DDMMYYYY_table.csv",row.names=F)
 
 # Insert 10 empty rows per assessment to give some space per mini volcano
 df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%  group_split(assessment) %>%
