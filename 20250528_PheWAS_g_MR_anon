@@ -1,0 +1,1065 @@
+## ========================================================================== ##
+# Two-sample MR for PheWAS analysis of general cognition 'g' with HELIOS 10K data
+## ========================================================================== ##
+
+
+setwd("~/") # to reset mapped drive
+setwd("[YOUR DIRECTORY]")
+
+# List of library needed
+library(TwoSampleMR) #A package required to run Two-sample Mendelian Randomization
+library(stringr)
+library(tidyverse)
+library(tidyr)
+library(purrr)
+library(ggplot2)
+library(gridExtra)
+library(ieugwasr)   # to run clumping in case server is busy
+library(gwasrapidd) # to query GWAScatalog
+library(biomaRt)    # to query Ensembl genome databases (many species beyond human)
+library(VariantAnnotation)
+library(clusterProfiler) # for GSEA
+library(org.Hs.eg.db)  # for GSEA
+
+
+############ File preparation
+# Follow default clumping
+####### Exposure instrument #######
+exposure_g <-extract_instruments("ebi-a-GCST006572") # Cognitive performance GWAS from Lee 2018. EU, 147 SNPs
+
+####### Outcome instrument  #######
+outcome_comp <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-4522") # time spent using computer, 147 SNPs
+outcome_educ <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ieu-a-1239") # education GWAS from SSGAC Lee 2018, EU, 146 SNPs.
+outcome_income <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-7408") # household income before tax, 147 SNPs
+outcome_mobile <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-4094") # length of mobile phone use, 147 SNPs
+outcome_housing <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-d-680_3") # housing type: rent, 147 SNPs
+outcome_PEF <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-12019") # PEF, spirometry, 147 SNPs.
+outcome_FVC <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-14713") # FVC, spirometry, 147 SNPs.
+outcome_FEV1 <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-19657") # FEV1, spirometry, 147 SNPs.
+outcome_myopia <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-6353") # short-sightedness, 147 SNPs.
+outcome_grip <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-10215") # grip strength, right, 147 SNPs.
+outcome_wbc <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ebi-a-GCST90002374") # WBC count, 148 SNPs. Chen MH, 2020.
+outcome_manualjob <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-2002") # office work, 147 SNPs.
+outcome_transport <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-17155") # transport to go to work: public transport, 147 SNPs.
+outcome_height <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ebi-a-GCST90029008") # height, 147 SNPs. Loh PR 2018.
+outcome_neutr <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ebi-a-GCST90002351") # neutrophil cell count, 148 SNPs. Chen MH, 2020.
+outcome_pbf <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-8909") # body fat percentage, 147 SNPs.
+outcome_tbw <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-14540") # TBW, 147 SNPs.
+outcome_ffm <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-13354") # FFM, 147 SNPs.
+outcome_mono <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ebi-a-GCST90002340") # monocyte count, 148 SNPs. Chen MH, 2020.
+outcome_carb <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-7244") # carbohydrate, 147 SNPs.
+outcome_pufa_mufa <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ebi-a-GCST90092940") # PUFA/MUFA ratio, 147 SNPs. Richardson TG, 2022.
+outcome_alcoh <- extract_outcome_data(snps=exposure_g$SNP, outcomes="ukb-b-5779") # alcohol intake frequency, 147 SNPs.
+
+# visceral fat mass
+# Take VAT full summary statistics so that can perform clumping as per other phenotype
+# Note that in summary this generates 205 SNPs whereas the paper (also in GWAS Catalog 31501611) has 209 SNPs
+# For further info on format, https://www.cog-genomics.org/plink/1.9/formats, under assoc.linear
+rawdata_VAT_full <- read.table(file="VAT_SEX-COMBINED_UKB.txt", sep = " ", header=T,quote="\"") # GWAS Catalog GCST008744
+names(rawdata_VAT_full)[names(rawdata_VAT_full)=="BETA"] <- "beta"
+names(rawdata_VAT_full)[names(rawdata_VAT_full)=="SE"] <- "se"
+names(rawdata_VAT_full)[names(rawdata_VAT_full)=="A1"] <- "effect_allele"
+names(rawdata_VAT_full)[names(rawdata_VAT_full)=="P"] <- "pval"
+names(rawdata_VAT_full)[names(rawdata_VAT_full)=="CHR"] <- "chr"
+rawdata_VAT_filter <- rawdata_VAT_full [c(1,2,4,7,8,10)]
+
+# No EAF, so this has to be derived using reference panel
+rawdata_VAT_filter <- rawdata_VAT_filter %>% filter (pval <=5e-8) #so that it isn't too big. Change to 5e-2 for full statistics
+
+snp_mart <- useEnsembl(biomart="ENSEMBL_MART_SNP", 
+                       host="https://grch37.ensembl.org", 	#update to grch38 link if needed
+                       dataset="hsapiens_snp")
+
+hg19_eaf <- getBM(attributes = c('refsnp_id', 'chr_name', 'chrom_start', 
+                                 'allele', 'allele_1', 'minor_allele', 'minor_allele_freq'), 	#these are the desired output columns; listAttributes(snp_mart) will provide descriptions
+                  filters = 'snp_filter',   
+                  values = rawdata_VAT_filter$SNP, 	#provide input i.e. list of snps for which eaf or rsid needed
+                  mart = snp_mart)
+
+names(hg19_eaf)[names(hg19_eaf)=="refsnp_id"] <- "SNP"
+rawdata_VAT_filter <- merge(rawdata_VAT_filter,hg19_eaf,by="SNP")
+# Check if minor allelle=effect allele reported in the study, if now EAF=1-MAF
+rawdata_VAT_filter$effect_allele_status = with (rawdata_VAT_filter,
+                                                ifelse(effect_allele ==minor_allele,1,0))
+rawdata_VAT_filter$eaf = with (rawdata_VAT_filter,
+                               ifelse(effect_allele_status==0,1-minor_allele_freq,minor_allele_freq)) 
+rawdata_VAT_eaf <- rawdata_VAT_filter %>% dplyr::select (1:6,8,14) %>% filter (!is.na(eaf)) %>% # may need to add dplyr:: due to conflict
+  dplyr::rename(pos=chrom_start)
+
+outcome_VAT <- format_data(rawdata_VAT_eaf, type="outcome")
+
+############ Harmonise data
+dat_comp <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_comp) # 147 SNPs
+dat_educ <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_educ) # 145 SNPs
+dat_income <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_income) # 147 SNPs
+dat_mobile <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_mobile) # 147 SNPs
+dat_housing <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_housing)  # 147 SNPs
+dat_PEF <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_PEF)  # 147 SNPs
+dat_FVC <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_FVC)  # 147 SNPs
+dat_FEV1 <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_FEV1)  # 147 SNPs
+dat_myopia <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_myopia)  # 147 SNPs
+dat_grip <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_grip)  # 147 SNPs
+dat_wbc <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_wbc)  # 148 SNPs
+dat_manualjob <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_manualjob)  # 147 SNPs
+dat_transport <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_transport)  # 147 SNPs
+dat_height <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_height)  # 147 SNPs
+dat_neutr <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_neutr)  # 148 SNPs
+dat_pbf <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_pbf)  # 147 SNPs
+dat_tbw <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_tbw)  # 147 SNPs
+dat_ffm <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_ffm)  # 147 SNPs
+dat_mono <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_mono)  # 147 SNPs
+dat_carb <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_carb)  # 148 SNPs
+dat_pufa_mufa <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_pufa_mufa)  # 148 SNPs
+dat_alcoh <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_alcoh)  # 148 SNPs
+dat_VAT <- harmonise_data(exposure_dat = exposure_g, outcome_dat = outcome_VAT) # 8 SNPs
+
+############ MR
+dat_list <- list (dat_comp,dat_educ,dat_income,dat_mobile,
+                  dat_housing,dat_PEF,dat_FVC,dat_FEV1,dat_myopia,dat_grip,
+                  dat_wbc,dat_manualjob,dat_transport,dat_height,dat_neutr,
+                  dat_pbf,dat_tbw,dat_ffm,dat_mono,dat_carb,dat_pufa_mufa,dat_alcoh,dat_VAT)
+
+dat_list2 <- lapply (dat_list,mr)
+dat_list3 <- lapply (dat_list2,generate_odds_ratios)
+
+
+dat_mr <- bind_rows(dat_list3, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr$outcome <- case_when( 
+  dat_mr$outcome == 1 ~ "time_use_computer",
+  dat_mr$outcome == 2 ~ "education_level",
+  dat_mr$outcome == 3 ~ "household_income",
+  dat_mr$outcome == 4 ~ "length_use_mobile",
+  dat_mr$outcome == 5 ~ "house_rent",
+  dat_mr$outcome == 6 ~ "PEF",
+  dat_mr$outcome == 7 ~ "FVC",
+  dat_mr$outcome == 8 ~ "FEV1",
+  dat_mr$outcome == 9 ~ "myopia",
+  dat_mr$outcome == 10 ~ "hand_grip",
+  dat_mr$outcome == 11 ~ "WBC_count",
+  dat_mr$outcome == 12 ~ "manual_job",
+  dat_mr$outcome == 13 ~ "work_transport_public",
+  dat_mr$outcome == 14 ~ "height",
+  dat_mr$outcome == 15 ~ "neutrophil_count",
+  dat_mr$outcome == 16 ~ "PBF",
+  dat_mr$outcome == 17 ~ "TBW",
+  dat_mr$outcome == 18 ~ "FFM",
+  dat_mr$outcome == 19 ~ "monocyte_count",
+  dat_mr$outcome == 20 ~ "carbohydrates_consume",
+  dat_mr$outcome == 21 ~ "PUFA/MUFA_consume",
+  dat_mr$outcome == 22 ~ "alcohol_consume",
+  dat_mr$outcome == 23 ~ "VAT")
+
+############ Forest Plot of various MR.
+# Prepare relevant data
+forestplot_IVW <- dat_mr %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Inverse variance weighted")
+forestplot_egger <- dat_mr %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="MR Egger")
+forestplot_med <- dat_mr %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Weighted median")
+
+mr_list <- list(forestplot_IVW,forestplot_egger,forestplot_med)
+
+# Apply p value correction for multiple testing
+# Create function in line with reverse calculation at https://www.bmj.com/content/343/bmj.d2090
+mr_pval_correct <- function(x){
+  y <- x
+  y$p_adj <- p.adjust(y$pval, method = "BH", n=length(y$pval))# Introduce p value correction, benjamini-hochberg method
+  y <- y %>% mutate (z_adj=-0.862 + sqrt(0.743-2.404*log10(p_adj)),
+                     se_adj=b/z_adj,
+                     ci.lower=exp(b - (1.96*se_adj)),
+                     ci.upper=exp(b + (1.96*se_adj)),
+                     )
+  return(y)
+}
+
+mr_list2 <- lapply(mr_list,mr_pval_correct)
+dat_mr2 <- bind_rows(mr_list2, .id = "method") #convert the list to dataframe, keeping source id
+dat_mr2$method <- case_when( 
+  dat_mr2$method == 1 ~ "Inverse variance weighted",
+  dat_mr2$method == 2 ~ "MR Egger",
+  dat_mr2$method == 3 ~ "Weighted median")
+
+dat_mr2 <- dat_mr2 %>% mutate ('OR (95% CI)'=sprintf("%.2f (%.2f to %.2f)",dat_mr2$or,dat_mr2$ci.lower,dat_mr2$ci.upper))
+
+write.csv(dat_mr2,"TwosampleMR_univar_DDMMYYYY.csv",row.names = F)
+
+dat_mr2 <- read.csv("TwosampleMR_univar_DDMMYYYY_2.csv")
+
+# Create categorical variable with colour code in line with PheWAS
+dat_mr2 <- dat_mr2 %>% 
+  mutate (assessment=
+  ifelse(grepl('FFM|height|PBF|TBW|VAT',outcome),'body composition',
+  ifelse(grepl('hand_grip',outcome),'hand grip',
+  ifelse(grepl('_count',outcome),'biochemistry',
+  ifelse(grepl('FEV1|FVC|PEF',outcome),'spirometry',
+  ifelse(grepl('_consume',outcome),'dietary intake',
+  ifelse(grepl('education_level|house_rent|household_income|length_use_mobile|manual_job|time_use_computer|work_transport_public|myopia',outcome),'sociodemography','sociodemography')))))))
+  
+# Forest plot, with colour
+ivw_median <- dat_mr2 %>% mutate (outcome=str_replace_all(outcome, "_", " ")) %>%
+  mutate (outcome=str_replace_all(outcome, "education level", "TYE")) %>%
+  mutate(assessment = fct_relevel(assessment, c("hand grip","spirometry","dietary intake","biochemistry","body composition","sociodemography"))) %>%
+  arrange(assessment, dplyr::desc(or)) %>%
+  mutate(outcome = factor(outcome, levels = unique(outcome))) %>%
+  filter (method!="MR Egger") %>% # mutate (outcome=fct_reorder(outcome,dplyr::desc(or))) %>% 
+  ggplot() +
+  geom_pointrange(aes(x=outcome, y=or, ymin=ci.lower, ymax=ci.upper, group=method, shape=method, color = assessment),
+                  position = position_dodge(width = 0.75),size=0.5) + 
+  scale_shape_manual(values = c(16,1)) +
+  scale_colour_brewer(palette = "Dark2") +
+  geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=0 after flip
+  coord_flip(ylim = c(0.1, 1.8)) +  # flip coordinates (puts labels on y axis)
+  xlab("outcome variables") + ylab("OR (95% CI) of g as exposure variable") +
+  labs(colour = "", shape = "") +
+  theme_bw()+ theme(legend.position = "top")+
+  guides(shape=guide_legend(nrow=2,byrow=TRUE),
+         colour=guide_legend(nrow=3,byrow=TRUE))
+
+# Better labelling  
+tiff(file="PheWAS_g_2sampleMR_DDMMYYYY.tiff",
+     width=7, height=7, units="in", res=300)
+ivw_median
+dev.off()
+
+############ Sensitivity testing
+# Heteregeneity test
+dat_hetero <- lapply (dat_list,mr_heterogeneity)
+dat_mr_hetero <- bind_rows(dat_hetero, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr_hetero$outcome <- case_when( 
+  dat_mr_hetero$outcome == 1 ~ "time_use_computer",
+  dat_mr_hetero$outcome == 2 ~ "education_level",
+  dat_mr_hetero$outcome == 3 ~ "household_income",
+  dat_mr_hetero$outcome == 4 ~ "length_use_mobile",
+  dat_mr_hetero$outcome == 5 ~ "house_rent",
+  dat_mr_hetero$outcome == 6 ~ "PEF",
+  dat_mr_hetero$outcome == 7 ~ "FVC",
+  dat_mr_hetero$outcome == 8 ~ "FEV1",
+  dat_mr_hetero$outcome == 9 ~ "myopia",
+  dat_mr_hetero$outcome == 10 ~ "hand_grip",
+  dat_mr_hetero$outcome == 11 ~ "WBC_count",
+  dat_mr_hetero$outcome == 12 ~ "manual_job",
+  dat_mr_hetero$outcome == 13 ~ "work_transport_public",
+  dat_mr_hetero$outcome == 14 ~ "height",
+  dat_mr_hetero$outcome == 15 ~ "neutrophil_count",
+  dat_mr_hetero$outcome == 16 ~ "PBF",
+  dat_mr_hetero$outcome == 17 ~ "TBW",
+  dat_mr_hetero$outcome == 18 ~ "FFM",
+  dat_mr_hetero$outcome == 19 ~ "monocyte_count",
+  dat_mr_hetero$outcome == 20 ~ "carbohydrates_consume",
+  dat_mr_hetero$outcome == 21 ~ "PUFA/MUFA_consume",
+  dat_mr_hetero$outcome == 22 ~ "alcohol_consume",
+  dat_mr_hetero$outcome == 23 ~ "VAT")
+
+write.csv(dat_mr_hetero,"TwosampleMR_Qstat_DDMMYYYY.csv",row.names = F)
+
+# Horizontal pleiotropy test
+dat_pleio <- lapply (dat_list,mr_pleiotropy_test)
+dat_mr_pleio <- bind_rows(dat_pleio, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr_pleio$outcome <- case_when( 
+  dat_mr_pleio$outcome == 1 ~ "time_use_computer",
+  dat_mr_pleio$outcome == 2 ~ "education_level",
+  dat_mr_pleio$outcome == 3 ~ "household_income",
+  dat_mr_pleio$outcome == 4 ~ "length_use_mobile",
+  dat_mr_pleio$outcome == 5 ~ "house_rent",
+  dat_mr_pleio$outcome == 6 ~ "PEF",
+  dat_mr_pleio$outcome == 7 ~ "FVC",
+  dat_mr_pleio$outcome == 8 ~ "FEV1",
+  dat_mr_pleio$outcome == 9 ~ "myopia",
+  dat_mr_pleio$outcome == 10 ~ "hand_grip",
+  dat_mr_pleio$outcome == 11 ~ "WBC_count",
+  dat_mr_pleio$outcome == 12 ~ "manual_job",
+  dat_mr_pleio$outcome == 13 ~ "work_transport_public",
+  dat_mr_pleio$outcome == 14 ~ "height",
+  dat_mr_pleio$outcome == 15 ~ "neutrophil_count",
+  dat_mr_pleio$outcome == 16 ~ "PBF",
+  dat_mr_pleio$outcome == 17 ~ "TBW",
+  dat_mr_pleio$outcome == 18 ~ "FFM",
+  dat_mr_pleio$outcome == 19 ~ "monocyte_count",
+  dat_mr_pleio$outcome == 20 ~ "carbohydrates_consume",
+  dat_mr_pleio$outcome == 21 ~ "PUFA/MUFA_consume",
+  dat_mr_pleio$outcome == 22 ~ "alcohol_consume",
+  dat_mr_pleio$outcome == 23 ~ "VAT")
+
+write.csv(dat_mr_pleio,"TwosampleMR_Eggerpval_DDMMYYYY.csv",row.names = F)
+
+# Leave one out analysis
+dat_loo <- lapply (dat_list,mr_leaveoneout)
+dat_mr_loo <- bind_rows(dat_loo, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr_loo$outcome <- case_when( 
+  dat_mr_loo$outcome == 1 ~ "time_use_computer",
+  dat_mr_loo$outcome == 2 ~ "education_level",
+  dat_mr_loo$outcome == 3 ~ "household_income",
+  dat_mr_loo$outcome == 4 ~ "length_use_mobile",
+  dat_mr_loo$outcome == 5 ~ "house_rent",
+  dat_mr_loo$outcome == 6 ~ "PEF",
+  dat_mr_loo$outcome == 7 ~ "FVC",
+  dat_mr_loo$outcome == 8 ~ "FEV1",
+  dat_mr_loo$outcome == 9 ~ "myopia",
+  dat_mr_loo$outcome == 10 ~ "hand_grip",
+  dat_mr_loo$outcome == 11 ~ "WBC_count",
+  dat_mr_loo$outcome == 12 ~ "manual_job",
+  dat_mr_loo$outcome == 13 ~ "work_transport_public",
+  dat_mr_loo$outcome == 14 ~ "height",
+  dat_mr_loo$outcome == 15 ~ "neutrophil_count",
+  dat_mr_loo$outcome == 16 ~ "PBF",
+  dat_mr_loo$outcome == 17 ~ "TBW",
+  dat_mr_loo$outcome == 18 ~ "FFM",
+  dat_mr_loo$outcome == 19 ~ "monocyte_count",
+  dat_mr_loo$outcome == 20 ~ "carbohydrates_consume",
+  dat_mr_loo$outcome == 21 ~ "PUFA/MUFA_consume",
+  dat_mr_loo$outcome == 22 ~ "alcohol_consume",
+  dat_mr_loo$outcome == 23 ~ "VAT")
+
+write.csv(dat_mr_loo,"TwosampleMR_loo_DDMMYYYY.csv",row.names = F)
+
+tiff(file="PheWAS_g_2sampleMRloo_DDMMYYYY.tiff",
+     width=6, height=8, units="in", res=300)
+dat_mr_loo %>% group_by(outcome) %>% mutate (SNP=fct_reorder(SNP,dplyr::desc(b))) %>%
+  filter (outcome=="manual_job" | outcome=="alcohol_consume" | outcome=="PBF" | outcome=="house_rent" | #only the significant ones
+          outcome=="myopia" | outcome=="work_transport_public" | outcome=="height" | outcome=="PUFA/MUFA_consume" |
+          outcome=="time_use_computer" | outcome=="household_income"| outcome=="education_level") %>%
+  ggplot(aes(x=SNP, y=exp(b))) +
+  geom_point(color = "red", size=0.2,alpha=0.5) +
+  geom_hline(yintercept=1, linetype="dotted") +
+  geom_errorbar(aes(ymin=exp(b-1.96*se), ymax=exp(b+1.96*se)), color = "grey80", alpha=0.5)+
+  xlab("") + ylab("") +  theme_classic()+ coord_flip()+
+  theme(axis.text.x=element_blank(), axis.ticks.x=element_blank(), 
+        axis.text.y=element_blank(), axis.ticks.y=element_blank(),legend.position = "none")+
+  facet_wrap(.~outcome,scales = "free",ncol=2)
+dev.off()
+
+# Single SNP
+dat_list_min <- list (dat_VAT,dat_manualjob,dat_alcoh,dat_pbf,
+                      dat_housing,dat_myopia,dat_transport,dat_height,
+                      dat_pufa_mufa,dat_comp,dat_income,dat_educ)
+
+dat_single <- lapply (dat_list_min,mr_singlesnp)
+dat_single_list <- c("VAT","manual_job","alcohol_consume","PBF",
+                     "house_rent","myopia","transport_public","height",
+                     "PUFA/MUFA_consume","time_use_computer","household_income","education_level")
+
+# modification of https://rdrr.io/github/MRCIEU/TwoSampleMR/src/R/singlesnp.R
+mr_funnel_plot_modif <- function (z,zz){
+am <- grep("All", z$SNP, value=TRUE)
+z$SNP <- gsub("All - ", "", z$SNP)
+am <- gsub("All - ", "", am)
+image<-ggplot2::ggplot(subset(z, ! SNP %in% am), ggplot2::aes(y = 1/se, x=b)) +
+  ggplot2::geom_point(size=0.5) +
+  ggplot2::geom_vline(data=subset(z, SNP %in% am), ggplot2::aes(xintercept=b, colour = SNP)) +
+  # ggplot2::scale_colour_brewer(type="qual") +
+  ggplot2::scale_colour_manual(values = c("#a6cee3", 
+                                          "#1f78b4", "#b2df8a", "#33a02c", "#fb9a99", 
+                                          "#e31a1c", "#fdbf6f", "#ff7f00", "#cab2d6", 
+                                          "#6a3d9a", "#ffff99", "#b15928")) +
+  ggplot2::labs(y=expression(1/SE[IV]), x=expression(beta[IV]), colour="MR Method") + theme_classic()+
+  ggplot2::theme(legend.position="none", legend.direction="vertical")
+for (i in seq_along(zz)) {
+  image <- image +
+    ggtitle(zz[i])
+}
+return(ggplot2::ggplotGrob(image))
+
+}
+
+plot_funnel <- mapply (mr_funnel_plot_modif,dat_single,dat_single_list)
+
+plot_funnel <- do.call(grid.arrange, c(plot_funnel,ncol=4))
+
+ggsave("PheWAS_g_2sampleMRfunnel_DDMMYYYY.tiff", plot_funnel, width=15, height=6) # all eligible data
+
+
+############ Sensitivity testing by taking out SNPs that contribute to pleiotropy
+# Sensitivity analysis, taking out SNPs remove variants. Before harmonization with outcome, but after clumping.
+# https://cran.r-project.org/web/packages/gwasrapidd/vignettes/faq.html
+# Not done for VAT as there are so little SNPs left, not reliable
+exposure_g_SNP <- pull (exposure_g,SNP)
+
+# Check presence of SNPs in GWAS catalog, many thanks to Dr. Ramiro Magno
+# vector of TRUEs and FALSEs containing
+are_in_the_catalog_g <- exists_variant(exposure_g_SNP)
+
+# Generate a vector of those SNPs that do exist in the GWAS Catalog
+snps_in_the_catalog_g <- names(are_in_the_catalog_g)[are_in_the_catalog_g]
+names(snps_in_the_catalog_g) <- snps_in_the_catalog_g
+
+
+# Remove problematic SNP
+problematic_g <- c("rs61815057","rs10497818","rs2652454","rs58489175","rs2180111","rs5757670","rs62065449")
+exposure_g_SNP_2 <- exposure_g_SNP [!(exposure_g_SNP  %in% problematic_g )]
+
+# Create list of variants per phenotypes after checking each SNPs against GWAS catalog
+names(exposure_g_SNP_2) <- exposure_g_SNP_2
+g_SNP_variants <- purrr::map(exposure_g_SNP_2, ~gwasrapidd::get_studies(variant_id=.x))
+
+# The version to skip error in case SNPs not registered yet in GWAS catalog
+# https://stackoverflow.com/questions/14748557/skipping-error-in-for-loop
+# with trycatch, skip the item (works well but unequal row)
+getstudies_trait <- function(x){
+  y  <- names(x)                                                      #describe SNPs of each slot 'y'
+  z  <- strsplit(paste(y),' ')                                        #split SNPs into a list
+  z <- do.call(rbind.data.frame, z)                                   #convert list to dataframe 'z' with single column of SNPs
+  names(z)[1]<- "SNP"                                                 #rename the first column as SNP
+  reported_trait = list()                                             #define empty list
+  for (i in 1:length(x)){                                             #define loop, from 1 till the maximum length of SNP list
+    get_studies_result <- unlist (x[[i]])                          
+    get_studies_result2 <- tryCatch({get_studies_result@studies}, error = function(e) {return(NA)})     
+    trait <- tryCatch({get_studies_result2 %>% dplyr::select (reported_trait) %>% t()},                                    
+                      error = function(e) {return(NA)})
+    reported_trait[[i]] <- trait
+  }
+  
+  reported_trait <- plyr::ldply(reported_trait, rbind)                #convert list of different length to a dataframe
+  reported_trait <- cbind (z,reported_trait)                          #cbind SNP column and reported trait
+  return (reported_trait)                                             #return the dataframe to a vector
+}
+
+# Generate a list of reported trait for all variants per phenotype against GWAS catalog
+g_SNPlist <- getstudies_trait(g_SNP_variants)
+
+
+# wrangle data to show unique trait per SNP
+find_unique_trait <- function(x){
+  y <- x %>% t() %>% as.data.frame ()
+  colnames (y) <- y [1,]
+  y <- y[-1, ] 
+  y <- y %>% pivot_longer(cols=1:length(y),names_to="SNP",values_to="trait") %>%
+    filter (!is.na(trait)) %>% distinct (SNP, trait, .keep_all=T)
+  return(y)
+}
+
+# Generate a simple dataframe of reported trait for all variants per phenotype against GWAS catalog
+g_SNPlist <- find_unique_trait(g_SNPlist) # 1060- SNP-phenotype combination from 147 initial SNPs
+
+write.csv(g_SNPlist,"g_SNPlist.csv", row.names = FALSE)
+
+g_SNPlist <-read.csv("g_SNPlist.csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+# Cleanup the list of SNP variants to only contain those that we want to remove
+g_SNPlist_pleio <- g_SNPlist %>% mutate (trait_aggr=case_when(
+  str_detect(trait,regex("brain region volumes|cognit|creativity|educ|intel|read|reason|execu|math|multi-trait", ignore_case = T))
+  ~"include",T~"exclude")) %>% mutate (trait_aggr2=case_when(
+    str_detect(trait,regex("pleio", ignore_case = T))
+    ~"exclude",T~trait_aggr))
+table(g_SNPlist_pleio$trait_aggr2) # 505 SNPs remaining
+
+
+# Create new exposure_dat without the pleiotropic SNPs and re-run MR
+pleiotropic_g <- g_SNPlist_pleio %>% filter (trait_aggr2=="include") %>%  distinct (SNP) %>% mutate (include="YES")
+
+exposure_g_pleio <- exposure_g %>% left_join (.,pleiotropic_g) %>% filter (!is.na(include)) %>% dplyr::select (-include) # 134 remaining
+
+exposure_g_pleio_SNP <- exposure_g_pleio %>% dplyr::select (SNP)
+
+write.csv(exposure_g_pleio_SNP,"g_SNP_rsid_pleio_DDMMYYYY.csv") # same as in previous run as it is the same set of SNPs
+# 2025/01/25: Therefore, there is no need to repeat pleiotropic MR, annotation or ALFA apart of fixing the MR diagram to include color category
+
+dat_comp_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_comp) # 134 SNPs
+dat_educ_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_educ) # 134 SNPs
+dat_income_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_income) # 134 SNPs
+dat_mobile_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_mobile) # 134 SNPs
+dat_housing_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_housing)  # 134 SNPs
+dat_PEF_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_PEF)  # 134 SNPs
+dat_FVC_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_FVC)  # 134 SNPs
+dat_FEV1_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_FEV1)  # 134 SNPs
+dat_myopia_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_myopia)  # 134 SNPs
+dat_grip_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_grip)  # 134 SNPs
+dat_wbc_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_wbc)  # 135 SNPs
+dat_manualjob_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_manualjob)  # 134 SNPs
+dat_transport_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_transport)  # 134 SNPs
+dat_height_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_height)  # 134 SNPs
+dat_neutr_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_neutr)  # 135 SNPs
+dat_pbf_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_pbf)  # 134 SNPs
+dat_tbw_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_tbw)  # 134 SNPs
+dat_ffm_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_ffm)  # 134 SNPs
+dat_mono_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_mono)  # 135 SNPs
+dat_carb_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_carb)  # 134 SNPs
+dat_pufa_mufa_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_pufa_mufa)  # 134 SNPs
+dat_alcoh_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_alcoh)  # 134 SNPs
+dat_VAT_pleio <- harmonise_data(exposure_dat = exposure_g_pleio, outcome_dat = outcome_VAT) # 8 SNPs
+
+dat_list_pleio <- list (dat_comp_pleio,dat_educ_pleio,dat_income_pleio,dat_mobile_pleio,
+                  dat_housing_pleio,dat_PEF_pleio,dat_FVC_pleio,dat_FEV1_pleio,dat_myopia_pleio,dat_grip_pleio,
+                  dat_wbc_pleio,dat_manualjob_pleio,dat_transport_pleio,dat_height_pleio,dat_neutr_pleio,
+                  dat_pbf_pleio,dat_tbw_pleio,dat_ffm_pleio,dat_mono_pleio,dat_carb_pleio,dat_pufa_mufa_pleio,dat_alcoh_pleio,dat_VAT_pleio)
+
+dat_list2_pleio <- lapply (dat_list_pleio,mr)
+dat_list3_pleio <- lapply (dat_list2_pleio,generate_odds_ratios)
+
+dat_mr_pleio <- bind_rows(dat_list3_pleio, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr_pleio$outcome <- case_when( 
+  dat_mr_pleio$outcome == 1 ~ "time_use_computer",
+  dat_mr_pleio$outcome == 2 ~ "education_level",
+  dat_mr_pleio$outcome == 3 ~ "household_income",
+  dat_mr_pleio$outcome == 4 ~ "length_use_mobile",
+  dat_mr_pleio$outcome == 5 ~ "house_rent",
+  dat_mr_pleio$outcome == 6 ~ "PEF",
+  dat_mr_pleio$outcome == 7 ~ "FVC",
+  dat_mr_pleio$outcome == 8 ~ "FEV1",
+  dat_mr_pleio$outcome == 9 ~ "myopia",
+  dat_mr_pleio$outcome == 10 ~ "hand_grip",
+  dat_mr_pleio$outcome == 11 ~ "WBC_count",
+  dat_mr_pleio$outcome == 12 ~ "manual_job",
+  dat_mr_pleio$outcome == 13 ~ "work_transport_public",
+  dat_mr_pleio$outcome == 14 ~ "height",
+  dat_mr_pleio$outcome == 15 ~ "neutrophil_count",
+  dat_mr_pleio$outcome == 16 ~ "PBF",
+  dat_mr_pleio$outcome == 17 ~ "TBW",
+  dat_mr_pleio$outcome == 18 ~ "FFM",
+  dat_mr_pleio$outcome == 19 ~ "monocyte_count",
+  dat_mr_pleio$outcome == 20 ~ "carbohydrates_consume",
+  dat_mr_pleio$outcome == 21 ~ "PUFA/MUFA_consume",
+  dat_mr_pleio$outcome == 22 ~ "alcohol_consume",
+  dat_mr_pleio$outcome == 23 ~ "VAT")
+
+############ Forest Plot of various MR.
+# Prepare relevant data
+forestplot_IVW_pleio <- dat_mr_pleio %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Inverse variance weighted")
+forestplot_egger_pleio <- dat_mr_pleio %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="MR Egger")
+forestplot_med_pleio <- dat_mr_pleio %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Weighted median")
+
+mr_list_pleio <- list(forestplot_IVW_pleio,forestplot_egger_pleio,forestplot_med_pleio)
+
+mr_list2_pleio <- lapply(mr_list_pleio,mr_pval_correct)
+dat_mr2_pleio <- bind_rows(mr_list2_pleio, .id = "method") #convert the list to dataframe, keeping source id
+dat_mr2_pleio$method <- case_when( 
+  dat_mr2_pleio$method == 1 ~ "Inverse variance weighted",
+  dat_mr2_pleio$method == 2 ~ "MR Egger",
+  dat_mr2_pleio$method == 3 ~ "Weighted median")
+
+dat_mr2_pleio <- dat_mr2_pleio %>% mutate ('OR (95% CI)'=sprintf("%.2f (%.2f to %.2f)",dat_mr2_pleio$or,dat_mr2_pleio$ci.lower,dat_mr2_pleio$ci.upper))
+
+write.csv(dat_mr2_pleio,"TwosampleMR_univar_pleio_DDMMYYYY.csv",row.names = F)
+dat_mr2_pleio  <- read.csv ("TwosampleMR_univar_pleio_DDMMYYYY.csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+# Forest plot, with colour
+dat_mr2_pleio <- dat_mr2_pleio %>% 
+  mutate (assessment=
+            ifelse(grepl('FFM|height|PBF|TBW|VAT',outcome),'body composition',
+            ifelse(grepl('hand_grip',outcome),'hand grip',
+            ifelse(grepl('_count',outcome),'biochemistry',
+            ifelse(grepl('FEV1|FVC|PEF',outcome),'spirometry',
+            ifelse(grepl('_consume',outcome),'dietary intake',
+            ifelse(grepl('education_level|house_rent|household_income|length_use_mobile|manual_job|time_use_computer|work_transport_public|myopia',outcome),'sociodemography','sociodemography')))))))
+
+
+ivw_median_pleio <- dat_mr2_pleio %>% mutate (outcome=str_replace_all(outcome, "_", " ")) %>%
+  mutate (outcome=str_replace_all(outcome, "education level", "TYE")) %>%
+  mutate(assessment = fct_relevel(assessment, c("hand grip","spirometry","dietary intake","biochemistry","body composition","sociodemography"))) %>%
+  arrange(assessment, dplyr::desc(or)) %>%
+  mutate(outcome = factor(outcome, levels = unique(outcome))) %>%
+  filter (method!="MR Egger") %>% # mutate (outcome=fct_reorder(outcome,dplyr::desc(or))) %>% 
+  ggplot() +
+  geom_pointrange(aes(x=outcome, y=or, ymin=ci.lower, ymax=ci.upper, group=method, shape=method, color = assessment),
+                  position = position_dodge(width = 0.75),size=0.5) + 
+  scale_shape_manual(values = c(16,1)) +
+  scale_colour_brewer(palette = "Dark2") +
+  geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=0 after flip
+  coord_flip(ylim = c(0.1, 1.8)) +  # flip coordinates (puts labels on y axis)
+  xlab("outcome variables") + ylab("OR (95% CI) of g as exposure variable") +
+  labs(colour = "", shape = "") +
+  theme_bw()+ theme(legend.position = "top")+
+  guides(shape=guide_legend(nrow=2,byrow=TRUE),
+         colour=guide_legend(nrow=3,byrow=TRUE))
+
+# no underscore
+tiff(file="PheWAS_g_2sampleMR_pleio_DDMMYYYY.tiff",
+     width=7, height=7, units="in", res=300)
+ivw_median_pleio
+dev.off()
+
+
+############ illustration of the pleiotropic SNPs distribution of phenotype
+g_SNPlist <-read.csv("g_SNPlist.csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+g_SNPlist_category_cognit_vs_other <- g_SNPlist %>% mutate (trait_aggr=case_when(
+  str_detect(trait,regex("brain region volumes|cognit|creativity|educ|intel|read|reason|execu|math|multi-trait", ignore_case = T))
+  ~"include",T~"exclude")) %>% mutate (trait_aggr2=case_when(
+    str_detect(trait,regex("pleio", ignore_case = T))
+    ~"exclude",T~trait_aggr))
+table(g_SNPlist_category_cognit_vs_other$trait_aggr2) # 481 SNPs remaining
+write.csv (g_SNPlist_category_cognit_vs_other,"g_SNPlist_category_cognit_vs_other.csv")
+
+SNP_trait_count <- g_SNPlist %>% dplyr::select (-trait_aggr, -trait_aggr2) %>%
+  mutate (cognit=case_when(
+    str_detect(trait,regex("brain region volumes|cognit|creativity|educ|intel|read|reason|execu|math|multi-trait",
+    ignore_case = T))~1,T~0)) %>%
+  mutate (psych=case_when(
+    str_detect(trait,
+    regex("anorexia|bipolar|cannabis|depress|insom|mental|mood|smoking|sleep|schizo|substance|trauma|worry",
+    ignore_case = T))~1,T~0)) %>%
+  mutate (neuro=case_when(
+    str_detect(trait,regex("epilepsy|motor|parkinson|tourette",ignore_case = T))~1,T~0)) %>%
+  mutate (brain=case_when(
+    str_detect(trait,
+    regex("amygnuclei|anterior|aparc-|aseg|ba-exvivo| brain connect|brain imaging|brain morph|brain shape|cortical|nucleus|frontal|hemisphere|idp|lateral|medial|occipital|parsopercularis|qc swi|smri|sphingomyelin|thalamnuclei|temporal|wg lh|wg rh|whole brain",
+    ignore_case = T))~1,T~0)) %>%
+  mutate (anthro=case_when(
+      str_detect(trait,regex("body|bmi|height|hip|visceral|waist|weight", ignore_case = T))~1,T~0)) %>% 
+  mutate (biochem=case_when(
+    str_detect(trait,
+    regex("a1c|albumin|c-reactive|calcium|creatinine|eosinophil|f-cell|globulin|hemoglobin|hematocrit|mean corpuscular volume|platelet|red blood|red cell|urate|uric|white blood",
+    ignore_case = T))~1,T~0)) %>% 
+  mutate (cvd=case_when(
+    str_detect(trait,regex("arterial pressure|blood pressure|diabetes|hypertens|metabolic syndrome|renin-", ignore_case = T))~1,T~0)) %>% 
+  mutate (diet=case_when(
+    str_detect(trait,regex("alcohol|coffee|brussel|diet|drinks|food-liking|vegetable", ignore_case = T))~1,T~0)) %>%
+  mutate (metabol_prot=case_when(
+    str_detect(trait,
+    regex("alanine|atf-6|argini|aspart|choline|glutamy|glycine|metabolic biomarker|sulfotransferase|x-",
+    ignore_case = T))~1,T~0)) %>%
+  mutate (lipid=case_when(
+    str_detect(trait,regex("hdl|cholest|lipoprot|phospho|protein|trigly", ignore_case = T))~1,T~0)) %>%
+  mutate (paq=case_when(
+    str_detect(trait,regex("driving|leisure|walking", ignore_case = T))~1,T~0)) %>%
+  mutate (aging=case_when(
+    str_detect(trait,regex("aging|bald|grip|menarche|youth", ignore_case = T))~1,T~0)) %>%
+  mutate (lung=case_when(
+    str_detect(trait,regex("fev1|fevc|lung function", ignore_case = T))~1,T~0)) %>%
+  mutate (other=case_when(
+    cognit!=1 & brain!=1 & psych!=1 & neuro!=1 &
+    anthro!=1 & biochem!=1 & cvd!=1 &
+    lipid!=1 & diet!=1 & metabol_prot!=1 &
+    aging!=1 & paq !=1 & lung!=1~1,T~0))
+
+write.csv (SNP_trait_count,"SNP_trait_count.csv") 
+
+SNP_trait_count <-SNP_trait_count %>%
+  pivot_longer (cols = !c(SNP,trait),names_to="phenotype",values_to="status") %>% filter (status==1) %>%
+  dplyr::select (phenotype,status) %>% group_by (phenotype) %>%
+  dplyr::summarise (status_count=dplyr::n()) %>%
+  mutate (prop=status_count/sum(status_count)*100,
+          prop=round(prop,2),phenotype=as.factor(phenotype),
+          phenotype=fct_reorder(phenotype,prop,.desc=T))
+
+pal <- wesanderson::wes_palette(14, name = "Zissou1", type = "continuous")
+
+tiff(file="SNP_trait_pair_distr.tiff",
+     width=6, height=3, units="in", res=300)
+ggplot(SNP_trait_count, aes(x=phenotype,y=prop, fill=phenotype)) +
+  geom_bar (stat = "identity", position = "stack", colour = "black") +
+  labs(fill = "Phenotype", x="SNP count")+
+  coord_flip()+
+  scale_fill_manual(values= pal)+
+  theme_classic()+
+  theme (legend.position='none')+
+  labs(x= "", y="% SNP-trait pairs")
+dev.off()  
+
+
+############ Reverse MR
+exposure_comp <- extract_instruments("ukb-b-4522")
+exposure_educ <- extract_instruments("ieu-a-1239")
+exposure_income <- extract_instruments("ukb-b-7408") 
+exposure_mobile <- extract_instruments("ukb-b-4094")
+exposure_housing <- extract_instruments("ukb-d-680_3")
+exposure_PEF <- extract_instruments("ukb-b-12019")
+exposure_FVC <- extract_instruments("ukb-b-14713")
+exposure_FEV1 <- extract_instruments("ukb-b-19657")
+exposure_myopia <- extract_instruments("ukb-b-6353")
+exposure_grip <- extract_instruments("ukb-b-10215")
+exposure_wbc <- extract_instruments("ebi-a-GCST90002374")
+exposure_manualjob <- extract_instruments("ukb-b-2002")
+exposure_transport <- extract_instruments("ukb-b-17155")
+exposure_height <- extract_instruments("ebi-a-GCST90029008")
+exposure_neutr <- extract_instruments("ebi-a-GCST90002351")
+exposure_pbf <- extract_instruments("ukb-b-8909")
+exposure_tbw <- extract_instruments("ukb-b-14540")
+exposure_ffm <- extract_instruments("ukb-b-13354")
+exposure_mono <- extract_instruments("ebi-a-GCST90002340")
+exposure_carb <- extract_instruments(outcomes="ukb-b-7244") # somehow did not work
+exposure_pufa_mufa <- extract_instruments("ebi-a-GCST90092940")
+exposure_alcoh <- extract_instruments("ukb-b-5779")
+
+exposure_VAT <- format_data(rawdata_VAT_eaf, type="exposure") %>% mutate(samplesize.exposure=NA,data_source.exposure=NA)
+
+exposure_comb <- exposure_comp %>% rbind(.,exposure_educ) %>% rbind(.,exposure_income) %>% 
+  rbind(.,exposure_mobile) %>% rbind(.,exposure_housing) %>% rbind(.,exposure_PEF) %>% 
+  rbind(.,exposure_FVC) %>% rbind(.,exposure_FEV1) %>% rbind(.,exposure_myopia) %>% 
+  rbind(.,exposure_grip) %>% rbind(.,exposure_wbc) %>% rbind(.,exposure_manualjob) %>% 
+  rbind(.,exposure_transport) %>% rbind(.,exposure_height) %>% rbind(.,exposure_neutr) %>% 
+  rbind(.,exposure_pbf) %>% rbind(.,exposure_tbw) %>% rbind(.,exposure_ffm) %>% 
+  rbind(.,exposure_mono) %>% rbind(.,exposure_carb) %>% rbind(.,exposure_pufa_mufa) %>% 
+  rbind(.,exposure_alcoh) %>% rbind(.,exposure_VAT)
+  
+outcome_g <- extract_outcome_data(snps=exposure_comb$SNP, outcomes="ebi-a-GCST006572") 
+
+dat_comp_rev <- harmonise_data(exposure_dat = exposure_comp, outcome_dat = outcome_g)
+dat_educ_rev <- harmonise_data(exposure_dat = exposure_educ, outcome_dat = outcome_g)
+dat_income_rev <- harmonise_data(exposure_dat = exposure_income, outcome_dat = outcome_g)
+dat_mobile_rev <- harmonise_data(exposure_dat = exposure_mobile, outcome_dat = outcome_g)
+dat_housing_rev <- harmonise_data(exposure_dat = exposure_housing, outcome_dat = outcome_g)
+dat_PEF_rev <- harmonise_data(exposure_dat = exposure_PEF, outcome_dat = outcome_g)
+dat_FVC_rev <- harmonise_data(exposure_dat = exposure_FVC, outcome_dat = outcome_g)
+dat_FEV1_rev <- harmonise_data(exposure_dat = exposure_FEV1, outcome_dat = outcome_g)
+dat_myopia_rev <- harmonise_data(exposure_dat = exposure_myopia, outcome_dat = outcome_g)
+dat_grip_rev <- harmonise_data(exposure_dat = exposure_grip, outcome_dat = outcome_g)
+dat_wbc_rev <- harmonise_data(exposure_dat = exposure_wbc, outcome_dat = outcome_g)
+dat_manualjob_rev <- harmonise_data(exposure_dat = exposure_manualjob, outcome_dat = outcome_g)
+dat_transport_rev <- harmonise_data(exposure_dat = exposure_transport, outcome_dat = outcome_g) 
+dat_height_rev <- harmonise_data(exposure_dat = exposure_height, outcome_dat = outcome_g)
+dat_neutr_rev <- harmonise_data(exposure_dat = exposure_neutr, outcome_dat = outcome_g)
+dat_pbf_rev <- harmonise_data(exposure_dat = exposure_pbf, outcome_dat = outcome_g)
+dat_tbw_rev<- harmonise_data(exposure_dat = exposure_tbw, outcome_dat = outcome_g)
+dat_ffm_rev <- harmonise_data(exposure_dat = exposure_ffm, outcome_dat = outcome_g)
+dat_mono_rev <- harmonise_data(exposure_dat = exposure_mono, outcome_dat = outcome_g)
+dat_carb_rev <- harmonise_data(exposure_dat = exposure_carb, outcome_dat = outcome_g) #somehow failed to load
+dat_pufa_mufa_rev <- harmonise_data(exposure_dat = exposure_pufa_mufa, outcome_dat = outcome_g)
+dat_alcoh_rev <- harmonise_data(exposure_dat = exposure_alcoh, outcome_dat = outcome_g)
+dat_VAT_rev <- harmonise_data(exposure_dat = exposure_VAT, outcome_dat = outcome_g)
+
+# MR
+dat_list_rev <- list (dat_comp_rev,dat_educ_rev,dat_income_rev,dat_mobile_rev,
+                  dat_housing_rev,dat_PEF_rev,dat_FVC_rev,dat_FEV1_rev,dat_myopia_rev,dat_grip_rev,
+                  dat_wbc_rev,dat_manualjob_rev,dat_transport_rev,dat_height_rev,dat_neutr_rev,
+                  dat_pbf_rev,dat_tbw_rev,dat_ffm_rev,dat_mono_rev,dat_pufa_mufa_rev,dat_alcoh_rev,dat_VAT_rev)
+
+dat_list2_rev <- lapply (dat_list_rev,mr)
+dat_list3_rev <- lapply (dat_list2_rev,generate_odds_ratios)
+
+# Exclude Wald Ratio
+dat_mr_rev <- bind_rows(dat_list3_rev, .id = "outcome") #convert the list to dataframe, keeping source id
+dat_mr_rev$outcome <- case_when( 
+  dat_mr_rev$outcome == 1 ~ "time_use_computer",
+  dat_mr_rev$outcome == 2 ~ "education_level",
+  dat_mr_rev$outcome == 3 ~ "household_income",
+  dat_mr_rev$outcome == 4 ~ "length_use_mobile",
+  dat_mr_rev$outcome == 5 ~ "house_rent",
+  dat_mr_rev$outcome == 6 ~ "PEF",
+  dat_mr_rev$outcome == 7 ~ "FVC",
+  dat_mr_rev$outcome == 8 ~ "FEV1",
+  dat_mr_rev$outcome == 9 ~ "myopia",
+  dat_mr_rev$outcome == 10 ~ "hand_grip",
+  dat_mr_rev$outcome == 11 ~ "WBC_count",
+  dat_mr_rev$outcome == 12 ~ "manual_job",
+  dat_mr_rev$outcome == 13 ~ "work_transport_public",
+  dat_mr_rev$outcome == 14 ~ "height",
+  dat_mr_rev$outcome == 15 ~ "neutrophil_count",
+  dat_mr_rev$outcome == 16 ~ "PBF",
+  dat_mr_rev$outcome == 17 ~ "TBW",
+  dat_mr_rev$outcome == 18 ~ "FFM",
+  dat_mr_rev$outcome == 19 ~ "monocyte_count",
+  dat_mr_rev$outcome == 20 ~ "PUFA/MUFA_consume",
+  dat_mr_rev$outcome == 21 ~ "alcohol_consume",
+  dat_mr_rev$outcome == 22 ~ "VAT")
+
+############ Forest Plot of various MR.
+# Prepare relevant data
+forestplot_IVW_rev <- dat_mr_rev %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Inverse variance weighted")
+forestplot_egger_rev <- dat_mr_rev %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="MR Egger")
+forestplot_med_rev <- dat_mr_rev %>% dplyr::select (outcome,method,or,b,se,pval) %>% filter (method=="Weighted median")
+
+mr_list_rev <- list(forestplot_IVW_rev,forestplot_egger_rev,forestplot_med_rev)
+
+mr_list2_rev <- lapply(mr_list_rev,mr_pval_correct)
+dat_mr2_rev <- bind_rows(mr_list2_rev, .id = "method") #convert the list to dataframe, keeping source id
+dat_mr2_rev$method <- case_when( 
+  dat_mr2_rev$method == 1 ~ "Inverse variance weighted",
+  dat_mr2_rev$method == 2 ~ "MR Egger",
+  dat_mr2_rev$method == 3 ~ "Weighted median")
+
+dat_mr2_rev <- dat_mr2_rev %>% mutate ('OR (95% CI)'=sprintf("%.2f (%.2f to %.2f)",dat_mr2_rev$or,dat_mr2_rev$ci.lower,dat_mr2_rev$ci.upper))
+
+write.csv(dat_mr2_rev,"TwosampleMR_univar_rev_DDMMYYYY.csv",row.names = F)
+  
+# Forest plot
+dat_mr2_rev <- read.csv ("TwosampleMR_univar_rev_DDMMYYYY.csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+dat_mr2_rev  <- dat_mr2_rev  %>% 
+  mutate (assessment=
+          ifelse(grepl('FFM|height|PBF|TBW|VAT',outcome),'body composition',
+          ifelse(grepl('hand_grip',outcome),'hand grip',
+          ifelse(grepl('_count',outcome),'biochemistry',
+          ifelse(grepl('FEV1|FVC|PEF',outcome),'spirometry',
+          ifelse(grepl('_consume',outcome),'dietary intake',
+          ifelse(grepl('education_level|house_rent|household_income|length_use_mobile|manual_job|time_use_computer|work_transport_public|myopia',outcome),
+          'sociodemography','sociodemography')))))))
+
+tiff(file="PheWAS_g_2sampleMR_rev_DDMMYYYY.tiff",
+     width=7, height=7, units="in", res=300)
+dat_mr2_rev %>% filter (outcome!="house_rent") %>%
+  mutate (outcome=str_replace_all(outcome, "_", " ")) %>%
+  mutate (outcome=str_replace_all(outcome, "education level", "TYE")) %>%
+  mutate(assessment = fct_relevel(assessment, c("hand grip","spirometry","dietary intake","biochemistry","body composition","sociodemography"))) %>%
+  arrange(assessment, dplyr::desc(or)) %>%
+  mutate(outcome = factor(outcome, levels = unique(outcome))) %>%
+  filter (method!="MR Egger") %>% # mutate (outcome=fct_reorder(outcome,dplyr::desc(or))) %>% 
+  ggplot() +
+  geom_pointrange(aes(x=outcome, y=or, ymin=ci.lower, ymax=ci.upper, group=method, shape=method, color = assessment),
+                  position = position_dodge(width = 0.75),size=0.5) + 
+  scale_shape_manual(values = c(16,1)) +
+  scale_colour_brewer(palette = "Dark2") +
+  geom_hline(yintercept=1, lty=2) +  # add a dotted line at x=0 after flip
+  coord_flip(ylim = c(0.1, 2.5)) +  # flip coordinates (puts labels on y axis)
+  xlab("outcome variables") + ylab("OR (95% CI) of g as exposure variable") +
+  labs(colour = "", shape = "") +
+  theme_bw()+ theme(legend.position = "top")+
+  guides(shape=guide_legend(nrow=2,byrow=TRUE),
+         colour=guide_legend(nrow=3,byrow=TRUE))
+dev.off()
+
+############ Annotation
+dat_annot <- dat_comp_pleio %>% bind_rows (.,dat_educ_pleio) %>% bind_rows (.,dat_income_pleio) %>% bind_rows (.,dat_housing_pleio) %>%
+  bind_rows (.,dat_myopia_pleio) %>% bind_rows (.,dat_manualjob_pleio) %>% bind_rows (.,dat_transport_pleio) %>% bind_rows (.,dat_height_pleio) %>%
+  bind_rows (.,dat_pbf_pleio) %>% bind_rows (.,dat_pufa_mufa_pleio) %>% bind_rows (.,dat_alcoh_pleio) # from all significant phenotypes, pleiotropic SNPs removed, 134 SNPs
+
+dat_annot <- dat_annot %>% distinct(SNP,.keep_all = T) %>% dplyr::select (SNP)
+
+write.csv (dat_annot,"g_SNP_rsid_pleio_20250128.csv")
+
+
+############ Descriptive of VEP
+g_snp_vep <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+# donut chart
+donut_variant <- g_snp_vep %>% dplyr::select (1:3,Consequence) %>% dplyr::rename(rsid=1) %>% distinct(,.keep_all = T) %>%
+  group_by(Consequence) %>% dplyr::summarise(n=dplyr::n()) %>%
+  mutate (total=sum(n),prop=n/total,ymax=cumsum(prop))
+donut_variant$ymin = c(0, head(donut_variant$ymax, n=-1))
+donut_variant <- donut_variant %>% mutate(Consequence = str_remove(Consequence, "_variant"))
+
+library(wesanderson)
+library(RColorBrewer)
+expand_palette <- function(palette, n) { # Create a function to interpolate colors
+  colorRampPalette(palette)(n)
+}
+palette_wes <- wes_palette("GrandBudapest1", n = 5)
+# Expand the palette to 10 colors
+expanded_palette <- expand_palette(palette_wes, 13)
+
+tiff(file="g_snp_vep_donut_conseq.tiff",
+     width=5, height=5, units="in", res=300)
+ggplot (donut_variant,aes(ymax=ymax,ymin=ymin,xmax=2,xmin=-2,fill=Consequence)) +
+  geom_rect(color="white", alpha=0.8) + coord_polar(theta="y",direction = -1) +
+  xlim (c(-8,3)) + theme_void()+
+  scale_fill_manual(values=expanded_palette)+
+  theme(legend.title=element_blank())
+dev.off()
+
+write.csv (donut_variant,"g_SNP_variantannotation_3_conseq.csv") 
+
+donut_prot <- g_snp_vep %>% 
+  dplyr::select (1:3,BIOTYPE) %>% dplyr::rename(rsid=1) %>% distinct(,.keep_all = T) %>%
+  group_by(BIOTYPE) %>% dplyr::summarise(n=dplyr::n()) %>%
+  mutate (total=sum(n),prop=n/total,ymax=cumsum(prop))
+donut_prot$ymin = c(0, head(donut_prot$ymax, n=-1))
+
+palette_wes <- wes_palette("Darjeeling1", n = 4)
+expanded_palette <- expand_palette(palette_wes, 19)
+
+tiff(file="g_snp_vep_donut_biotype.tiff",
+     width=5, height=5, units="in", res=300)
+ggplot (donut_prot,aes(ymax=ymax,ymin=ymin,xmax=2,xmin=-2,fill=BIOTYPE)) +
+  geom_rect(color="white", alpha=0.7) + coord_polar(theta="y",direction = -1) +
+  xlim (c(-8,3)) + theme_void()+
+  scale_fill_manual(values=expanded_palette)+
+  theme(legend.title=element_blank())
+dev.off()
+
+write.csv (donut_prot,"g_SNP_variantannotation_3_biotype.csv") 
+
+donut_gene <- g_snp_vep %>%
+  dplyr::select (1:3,SYMBOL) %>% dplyr::rename(rsid=1) %>% distinct(,.keep_all = T) %>%
+  group_by(SYMBOL) %>% dplyr::summarise(n=dplyr::n()) %>%
+  mutate (total=sum(n),prop=n/total,ymax=cumsum(prop))
+donut_gene$ymin = c(0, head(donut_gene$ymax, n=-1))
+
+
+tiff(file="g_snp_vep_donut_gene.tiff",
+     width=4, height=4, units="in", res=300)
+dev.off()
+
+############ F Statistics
+exposure_comp <-extract_instruments("ukb-b-4522") # time spent using computer, 82 SNPs
+exposure_income <-extract_instruments("ukb-b-7408") # household income before tax, 48 SNPs
+exposure_mobile <-extract_instruments("ukb-b-4094") # length of mobile phone use, 31 SNPs
+exposure_housing <-extract_instruments("ukb-d-680_3") # housing type: rent, 2 SNPs
+exposure_PEF <-extract_instruments("ukb-b-12019") # PEF, 136 SNPs
+exposure_FVC <-extract_instruments("ukb-b-14713") # FVC, 260 SNPs
+exposure_FEV1 <-extract_instruments("ukb-b-19657") # FEV1, 260 SNPs
+exposure_myopia <-extract_instruments("ukb-b-6353") # short-sightedness, 33 SNPs
+exposure_grip <-extract_instruments("ukb-b-10215") # grip strength, right, 176 SNPs
+exposure_manualjob <-extract_instruments("ukb-b-2002") # office work, 25 SNPs
+exposure_transport <-extract_instruments("ukb-b-17155") # transport to go to work: public transport, 25 SNPs
+exposure_pbf <-extract_instruments("ukb-b-8909") # body fat percentage, 395 SNPs
+exposure_tbw <-extract_instruments("ukb-b-14540") # TBW, 565 SNPs
+exposure_ffm <-extract_instruments("ukb-b-13354") # FFM, 556 SNPs
+exposure_carb <- extract_instruments("ukb-b-7244") # carbohydrate, ??? SNPs to be continued
+exposure_alcoh <- extract_instruments("ukb-b-5779") # alcohol intake frequency, 99 SNPs
+
+df_Fstat <- data.frame(
+  var=c("comp","income","mobile","housing","myopia","manualjob","transport","height","pbf","tbw","ffm","mono","wbc","neut","alcoh","carb","pufamufa","pef","fev1","fvc","grip"),
+  n=c(360895,397751,456972,356340,460536,263615,245364,673878,454633,454888,454850,521594,519288,562243,462346,64979,115006,421986,345665,421986,461089),
+  k=c(82,48,31,2,33,25,25,9863,395,565,556,394,443,352,99,148,74,136,260,260,176), # 148 for carb needs to be confirmed
+  r_sq=c(11,11,11,11,11,11,11,40,37,37,37,6.84,4.28,3.43,8.63,8.63,8.63,7.8,9.3,7.3,23.9)
+)
+
+df_Fstat <- df_Fstat %>% mutate (r_sq=r_sq/100,f=((n-k-1)/k)*(r_sq/(1-r_sq)))
+write.csv(df_Fstat,"TwosampleMR_Fstat_DDMMYYYY.csv",row.names=F)
+
+
+############ Compare MAF of SNPs across ancestries
+# based on g_SNP_rsid_pleio.csv
+# based on https://www.ncbi.nlm.nih.gov/snp/
+
+file_path_alfa <- "[YOUR DIRECTORY]"
+rsid_alfa <- list.files(path = file_path_alfa, pattern = "\\.tsv$", full.names = TRUE)
+rsid_alfa_list <- lapply(rsid_alfa, readLines)
+names(rsid_alfa_list) <- sub("\\_frequency.tsv$", "", basename(rsid_alfa))
+
+alfa_restructure <- function (x){
+split_lines <- strsplit(x, split = "[\t]")  # split each line using multiple separators (e.g., tab and space)
+split_lines_trim <- split_lines[-c(1:12)] # remove the preceding notes like release versions
+max_length <- max(sapply(split_lines_trim, length)) # determine the maximum length of any row in the trimmed list
+split_lines_trim_padded <- lapply(split_lines_trim, function(x) { # Pad shorter rows with NA values to make them all the same length
+    length(x) <- max_length  # Add NA values to the end if needed
+    x
+  })
+}
+
+rsid_alfa_list_restr <- lapply(rsid_alfa_list,alfa_restructure) # this is a list of list
+
+alfa_restructure2 <- function (z){
+  data <- do.call(rbind, lapply(z, function(x) as.data.frame(t(x), stringsAsFactors = FALSE)))
+  data_alfa <- data %>% filter (str_detect(V1,'Allele Frequency Aggregator')) %>%
+    dplyr::rename(study=V1,pop=V2,grp=V3,n=V4,A1=V5,A2=V6,BioProject_ID=V7,BioSample_ID=V8) %>%
+    dplyr::select (pop,n,A1,A2) %>%
+    separate(A1, into = c("A1", "A1_MAF"), sep = "=") %>%
+    separate(A2, into = c("A2", "A2_MAF"), sep = "=") %>%
+    mutate(A1_MAF = as.numeric(A1_MAF),A2_MAF = as.numeric(A2_MAF))}
+
+rsid_alfa_list_restr2 <- lapply(rsid_alfa_list_restr,alfa_restructure2) # this is a list of dataframe
+
+# Add a new column with the name of each data frame
+rsid_alfa_restr2 <- lapply(names(rsid_alfa_list_restr2), function(name) {
+  df <- rsid_alfa_list_restr2[[name]]
+  df$source_file <- name  # Add a new column with the name
+  df
+})
+
+# Combine all data frames using bind_rows
+rsid_alfa_restr2<- bind_rows(rsid_alfa_restr2)
+
+
+# Determine if MAF is different across ancestry
+rsid_alfa_df <- rsid_alfa_restr2 %>% dplyr::select (pop,A1_MAF,source_file) %>%
+  pivot_wider (names_from = pop, values_from = A1_MAF) %>% # for checking in case 1 SNP has less ancestry data
+  pivot_longer (!source_file,names_to = "pop", values_to = "A1_MAF") %>%
+  mutate(A1_MAFcat=cut(A1_MAF,
+    breaks = seq(0, 1, by = 0.1),  # Define MAF ranges
+    labels = 1:10,                    # Ordinal labels (1, 2, 3, ...)
+    include.lowest = TRUE            # Include the lowest value
+  )) %>% mutate (pop=as.factor(pop),A1_MAFcat=as.numeric(A1_MAFcat))
+
+rsid_alfa_aov <- aov (A1_MAF ~pop,data= rsid_alfa_df)
+summary(rsid_alfa_aov)
+TukeyHSD(rsid_alfa_aov)
+
+rsid_df_export <- rsid_alfa_restr2 %>% dplyr::select (pop,A1_MAF,source_file) %>%
+  pivot_wider (names_from = pop, values_from = A1_MAF)
+
+write.csv(rsid_df_export,"g_SNP_rsid_pleio_ALFA_result.csv",row.names=F)
+
+tiff(file="rsid_alfa_ancest_compare.tiff",
+     width=8, height=4, units="in", res=300)
+ggplot(rsid_alfa_df) +
+  geom_smooth(aes(x = pop, y = A1_MAFcat, group=source_file),size=0.5,se=F,colour="#DAD8C9", alpha = 0.6)+
+  geom_smooth(aes(x = pop, y = A1_MAFcat),size=3,se=F,colour="#FF0000")+
+  theme_minimal() +
+  labs(x = "Ancestry", y = "MAF in deciles")
+dev.off()
+
+
+############ Gene-Set Enrichment Analysis
+g_snp_vep <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+snp_gene<- g_snp_vep %>% dplyr::select (1,6) %>% dplyr::rename(SNP=1) %>% distinct(,.keep_all = T) %>%
+  filter (SYMBOL!="-")
+
+snp_g_pleio_gene <- dat_comp_pleio %>% bind_rows (.,dat_educ_pleio) %>% bind_rows (.,dat_income_pleio) %>% bind_rows (.,dat_housing_pleio) %>%
+  bind_rows (.,dat_myopia_pleio) %>% bind_rows (.,dat_manualjob_pleio) %>% bind_rows (.,dat_transport_pleio) %>% bind_rows (.,dat_height_pleio) %>%
+  bind_rows (.,dat_pbf_pleio) %>% bind_rows (.,dat_pufa_mufa_pleio) %>% bind_rows (.,dat_alcoh_pleio) %>% # keeping all SNPs as we want to rank based on beta g
+  full_join (.,snp_gene) %>% dplyr::rename (gene=SYMBOL) %>% filter (!is.na(gene)) %>%
+  dplyr::select (SNP,beta.exposure,eaf.exposure,se.exposure,pval.exposure,gene)
+
+# for each gene select the largest beta
+snp_g_pleio_generank <- snp_g_pleio_gene %>%
+  mutate (logp=-log(pval.exposure)) %>%
+  group_by(gene) %>% filter (logp==max(logp,na.rm=T)) %>% ungroup() %>% distinct()
+
+write.csv(snp_g_pleio_generank,"snp_g_pleio_gene_forGSEA_DDMMYYYY.csv",row.names = F) # 144 unique genes
+snp_g_pleio_generank <- read.csv ("snp_g_pleio_gene_forGSEA_DDMMYYYY.csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+snp_g_pleio_generank <- snp_g_pleio_generank  %>%  dplyr::select(gene,logp) %>% arrange(desc (logp))
+gene_list <- snp_g_pleio_generank$logp
+names(gene_list) <- snp_g_pleio_generank$gene
+
+org.Hs.eg.db <- org.Hs.eg.db  # Load GO pathways
+
+gsea_results <- gseGO(
+  geneList = gene_list,        # Ranked gene list
+  OrgDb = org.Hs.eg.db,        # Now the gene annotation database is loaded
+  keyType = "SYMBOL",          # Gene ID type (e.g., SYMBOL for gene symbols)
+  ont = "BP",                  # GO ontology type (BP, MF, or CC)
+  pvalueCutoff = 1,          # p-value cutoff
+  minGSSize = 10,              # Minimum gene set size
+  maxGSSize = 500,             # Maximum gene set size
+  scoreType = "pos"            # Use "pos", because all ranking is positive
+)
+
+gene_list <- snp_g_pleio_generank$gene
+valid_genes <- gene_list %in% keys(org.Hs.eg.db, keytype = "SYMBOL") # all not valid, need conversion
+gene_symbols <- mapIds(org.Hs.eg.db, keys = gene_list, column = "SYMBOL", keytype = "SYMBOL", multiVals = "first")
+valid_genes <- gene_symbols %in% keys(org.Hs.eg.db, keytype = "SYMBOL")
+
+valid_gene_list <- gene_list[valid_genes] # 106 out of 144 gene, the rest invalid (unsure why!!)
+invalid_gene_list <- gene_list[!valid_genes]
+
+enrich_results <- enrichGO(
+  gene = valid_gene_list,
+  OrgDb = org.Hs.eg.db,
+  keyType = "SYMBOL",
+  ont = "BP",
+  pvalueCutoff = 0.05
+)
+
+# Barplot to visualize the top enriched GO terms
+enrich_results_bar <- barplot(enrich_results, showCategory = 10) # Change showCategory to display top N categories (default is 10)
+enrich_results_dot <- dotplot(enrich_results, showCategory = 10)  # Adjust the number of top categories shown
+enrich_results_network <- cnetplot(enrich_results, showCategory = 10,
+                                   cex_label_category=0.75,cex_label_gene=0.75)
+
+tiff(file="snp_g_pleio_GSEA_DDMMYYYY.tiff",width=6, height=6, units="in", res=300)
+gridExtra::grid.arrange(enrich_results_bar,enrich_results_network,nrow=2,heights=c(2,4))
+dev.off()
+
+############ Functional Mapping and Annotation (https://fuma.ctglab.nl/)
+# averag of normalised expression per label (zero mean across samples)
+gtex_v8_tissue54 <- read.table(file="gtex_v8_ts_avg_normTPM_exp.txt", , sep = "\t", header=T) %>%
+  dplyr::select (-ensg) %>% column_to_rownames(var="symbol")
+gtex_v8_tissue54 <- gtex_v8_tissue54 %>% as.matrix()
+gtex_v8_tissue30 <- read.table(file="gtex_v8_ts_general_avg_normTPM_exp.txt", , sep = "\t", header=T) %>%
+  dplyr::select (-ensg) %>% column_to_rownames(var="symbol")
+gtex_v8_tissue30 <- gtex_v8_tissue30 %>% as.matrix()
+
+col <- circlize::colorRamp2(c(-5,0,5), c("blue","#ffff99", "coral"))
+
+tiff(file="gtex_v8_tissue54_DDMMYYYY.tiff",width=12, height=16, units="in", res=300)
+ComplexHeatmap::Heatmap (gtex_v8_tissue54, col=col, name="Gene exp",       
+         show_column_names= T,show_row_names= T,
+         cluster_rows = T,cluster_columns = T,
+         column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+         rect_gp = grid::gpar(col = "white", lwd = 2),
+         row_names_gp = grid::gpar(fontsize = 8),
+         row_km = 4,column_km =4, width = unit(20, "cm"))
+dev.off()
+
+tiff(file="gtex_v8_tissue30_DDMMYYYY.tiff",width=10, height=16, units="in", res=300)
+ComplexHeatmap::Heatmap (gtex_v8_tissue30, col=col, name="Gene exp",       
+                         show_column_names= T,show_row_names= T,
+                         cluster_rows = T,cluster_columns = T,
+                         column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                         rect_gp = grid::gpar(col = "white", lwd = 2),
+                         row_names_gp = grid::gpar(fontsize = 8),
+                         row_km = 4,column_km =4, width = unit(15, "cm"))
+dev.off()
+
+gtex_v8_tissue30_DEG <- read.table(file="gtex_v8_ts_general_DEG.txt", , sep = "\t", header=T) %>%
+  dplyr::select (-ensg) %>% column_to_rownames(var="symbol")
