@@ -1,0 +1,2058 @@
+## ========================================================================== ##
+# PheWAS analysis of general cognition 'g' with HELIOS 10K data: Epidemiological analysis
+## ========================================================================== ##
+
+# Upload library
+library(readxl)
+library(tidyverse)
+library(ggplot2)   
+library(gridExtra)
+library(naniar)
+library(plyr)
+library(dplyr)
+library(reshape2)
+library(grid)
+library(sjPlot)
+library(ggpubr)
+library(summarytools)
+library(magrittr)
+library(stringr)
+library(ggpmisc)
+library(olsrr)
+library(ggrepel)
+library(corrplot)
+library(ComplexHeatmap)
+
+setwd("~/")
+setwd("[YOUR DIRECTORY]")
+
+############ DATA PREPARATION ############
+# Read data
+data_imp<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA")) # Bioimpedance
+data_core<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA")) # Contains anthropometry, waist hip circumference, blood pressure, hand grip,c cognitive test, ECG, ultrasound, visual acuity, and biochemistry
+data_dxa1<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_dxa2<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_spiro<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_treadm<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_vic<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_FFQ<- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+data_FFQA<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_FFQB<- read_excel("[RELEVANT FILE].xlsx",sheet=1, na = c("","NA"))
+data_HLQ <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+# Get all column name from screened dictionary version 42 specific for PheWAS project
+setwd("[YOUR DIRECTORY]")
+
+data_dictionary <- read_excel("[RELEVANT FILE].xlsx",sheet=1) %>% select (10,21) # We used version 42
+names(data_dictionary)[1] <- "var_name"
+data_dictionary <- data_dictionary %>% filter (suitable_for_phewas=="yes") %>% select (-suitable_for_phewas)
+
+data_dictionary <- pull(data_dictionary,var_name) # Change the column containing variable name into a vector of string
+
+data_snippet_list <- list(data_imp,data_demog,data_dxa1,data_dxa2,
+                          data_anthro,data_waist,data_bp,data_grip,data_cog,data_ecg,data_us,data_eye1,data_eye2,data_biochem,
+                          data_spiro,data_treadm,data_vic,
+                          data_FFQB, data_HLQ)
+
+# Function to select column based on a list of variable name
+grab_var <- function(x){
+  y <- x %>%
+    select (any_of(data_dictionary)) #https://stackoverflow.com/questions/68749491/dplyr-r-selecting-columns-whose-names-are-in-an-external
+}
+
+data_snippet_list2 <- lapply (data_snippet_list,grab_var)
+
+# Rename dataframe within a list according to the file source
+names(data_snippet_list2)  <- c("HELIOS_Bioimpedance_Phase1","HELIOS_Core_demog","HELIOS_DXA1_Hip_Lumbar","HELIOS_DXA2_Whole_Body",
+                              "HELIOS_Core_anthro","HELIOS_Core_waist",
+                              "HELIOS_Core_bp","HELIOS_Core_grip","HELIOS_Core_cog",
+                              "HELIOS_Core_ecg","HELIOS_Core_us","HELIOS_Core_eye1","HELIOS_Core_eye2",
+                              "HELIOS_Core_biochem","HELIOS_Spirometry_Phase1",
+                              "HELIOS_Treadmill","HELIOS_Vicorder","HELIOS_FFQB","HELIOS_HLQ")
+
+# Pull out file for downstream analysis
+data_imp_g <- data_snippet_list2[["HELIOS_Bioimpedance_Phase1"]]
+data_demog_g <- data_snippet_list2[["HELIOS_Core_demog"]]
+data_dxa1_g <- data_snippet_list2[["HELIOS_DXA1_Hip_Lumbar"]]
+data_dxa2_g <- data_snippet_list2[["HELIOS_DXA2_Whole_Body"]]
+data_anthro_g <- data_snippet_list2[["HELIOS_Core_anthro"]]
+data_waist_g <- data_snippet_list2[["HELIOS_Core_waist"]]
+data_bp_g <- data_snippet_list2[["HELIOS_Core_bp"]]
+data_grip_g <- data_snippet_list2[["HELIOS_Core_grip"]]
+data_g <- data_snippet_list2[["HELIOS_Core_cog"]]
+data_ecg_g <- data_snippet_list2[["HELIOS_Core_ecg"]]
+data_us_g <- data_snippet_list2[["HELIOS_Core_us"]]
+data_eye1_g <- data_snippet_list2[["HELIOS_Core_eye1"]]
+data_eye2_g <- data_snippet_list2[["HELIOS_Core_eye2"]]# empty
+data_biochem_g <- data_snippet_list2[["HELIOS_Core_biochem"]]
+data_spiro_g <- data_snippet_list2[["HELIOS_Spirometry_Phase1"]]
+data_treadm_g <- data_snippet_list2[["HELIOS_Treadmill"]]
+data_vic_g <- data_snippet_list2[["HELIOS_Vicorder"]]
+data_FFQB_g <- data_snippet_list2[["HELIOS_FFQB"]]
+data_HLQ_g <- data_snippet_list2[["HELIOS_HLQ"]]
+
+
+############# ADDITIONAL VARIABLE DERIVATION ############
+## DEXA
+# For all fat measures only, normalized to height
+data_dxa2_g_fat <- data_dxa2_g %>% select (contains('_Fat_G'),DDWBB96_Est_Vat_Mass_G_Result,FREG0_PID,FREG1_Barcode) %>%
+  mutate (across(contains('_Fat_G'),~./1000)) %>%
+  rename_all(~ stringr::str_replace(., regex("_Fat_G", ignore_case = TRUE), "_Fat_Kg")) %>%
+  left_join(data_anthro_g %>% select (-DBI14_Weight)) %>%
+  mutate (across(contains('_Fat_Kg'),~./((DBI13_Height/100)^2))) %>%
+  rename_all(~ stringr::str_replace(., regex("_Fat_Kg", ignore_case = TRUE), "_Fat_Kgm2")) %>%
+  mutate (DDWBB_vFMI= (DDWBB96_Est_Vat_Mass_G_Result/1000)/((DBI13_Height/100)^2)) %>% select (-DDWBB96_Est_Vat_Mass_G_Result,-DBI13_Height)
+
+# For all lean measures only, normalized to height
+data_dxa2_g_lean <- data_dxa2_g %>% select (contains('_Lean_G'),FREG0_PID,FREG1_Barcode) %>%
+  mutate (across(contains('_Lean_G'),~./1000)) %>%
+  rename_all(~ stringr::str_replace(., regex("_Lean_G", ignore_case = TRUE), "_Lean_Kg")) %>%
+  left_join(data_anthro_g %>% select (-DBI14_Weight)) %>%
+  mutate (across(contains('_Lean_Kg'),~(./(DBI13_Height/100))^2)) %>%
+  rename_all(~ stringr::str_replace(., regex("_Lean_Kg", ignore_case = TRUE), "_Lean_Kgm2")) %>%
+  select (-DBI13_Height)
+
+data_dxa2_g <- data_dxa2_g %>% left_join (data_dxa2_g_fat) %>% left_join (data_dxa2_g_lean) %>%
+  select (-contains('_Fat_G')) %>% select (-contains('_Fat_G'))
+
+## Anthropometry
+data_anthro_g <- data_anthro_g %>% left_join (data_waist_g) %>% mutate (
+  BMI= DBI14_Weight / ((DBI13_Height/100)^2)) %>% rowwise() %>% mutate (
+  waist_mean= mean(FWH16_Waist1, FWH17_Waist2, FWH18_Waist3, na.rm=TRUE),
+  hip_mean = mean(FWH19_Hip1, FWH20_Hip2, FWH21_Hip3, na.rm=TRUE)) %>% ungroup() %>%
+mutate (WHR = waist_mean / hip_mean)
+data_anthro_g <- data_anthro_g %>% select (-c(FWH16_Waist1:FWH21_Hip3))
+
+
+## BP
+data_bp_g$Sbp <- rowMeans(subset(data_bp_g, select=c(DBP9_Sbp_1, DBP10_Sbp_2, DBP11_Sbp_3)), na.rm=TRUE)
+data_bp_g$Dbp <- rowMeans(subset(data_bp_g, select=c(DBP12_Dbp_1, DBP13_Dbp_2, DBP14_Dbp_3)), na.rm=TRUE)
+data_bp_g$Hr <- rowMeans(subset(data_bp_g, select=c(DBP15_Hr_1, DBP16_Hr_2, DBP17_Hr_3)), na.rm=TRUE)
+
+data_grip_g$grip_left <- rowMeans(subset(data_grip_g, select=c(FGS16_Handgrip_Strength_Left1, FGS17_Handgrip_Strength_Left2, FGS18_Handgrip_Strength_Left3)), na.rm=TRUE)
+data_grip_g$grip_right <- rowMeans(subset(data_grip_g, select=c(FGS19_Handgrip_Strength_Right1, FGS20_Handgrip_Strength_Right2, FGS21_Handgrip_Strength_Right3)), na.rm=TRUE)
+
+data_bp_g <- data_bp_g %>% left_join(.,data_grip_g) %>%
+ select(-c(DBP9_Sbp_1:DBP17_Hr_3),-c(FGS16_Handgrip_Strength_Left1:FGS21_Handgrip_Strength_Right3))
+
+## Cognition
+g <- data_g %>% select(FREG1_Barcode,DC7R4_Pairing7_Guesses:DC7R6_React_Avg,DC7R8_Stroopbox_Avg,DC7R10_Stroopink_Avg,DC7R12_Wm_Score)%>%
+  column_to_rownames(.,var="FREG1_Barcode") %>% na.omit() %>% mutate (
+  react_inv=1/DC7R6_React_Avg,stroopbox_inv=1/DC7R8_Stroopbox_Avg,stroopink_inv=1/DC7R10_Stroopink_Avg) %>%
+  select(-DC7R6_React_Avg,-DC7R8_Stroopbox_Avg,-DC7R10_Stroopink_Avg) %>%
+  dplyr::rename (DC7R6_React_Avg_inv=react_inv,DC7R8_Stroopbox_Avg_inv=stroopbox_inv,
+                 DC7R10_Stroopink_Avg_inv=stroopink_inv)
+
+g_pca <- prcomp(g, scale= TRUE) #FALSE because it isn't already centered yet
+
+g_pca_ind <- factoextra::get_pca_ind(g_pca)
+g_pca_ind <- as.data.frame(g_pca_ind[["coord"]]) %>% select (1) #not contribution
+
+g <- cbind (g,g_pca_ind)
+g <- g %>% rownames_to_column(.,"FREG1_Barcode") %>%
+  dplyr::rename (g=Dim.1)
+g$FREG1_Barcode <- as.numeric (g$FREG1_Barcode)
+
+## Biochemistry
+data_biochem_g_ln <- data_biochem_g %>% select (contains('DLAB'),FREG0_PID,FREG1_Barcode) %>%
+  mutate (across(contains('DLAB'),~log(.+1))) %>% # a lot of zeros
+  rename_all(~ stringr::str_replace(., regex("^DLAB", ignore_case = TRUE), "DLAB_ln"))
+
+data_biochem_g <- data_biochem_g %>% left_join (data_biochem_g_ln)
+
+# Subsequently keep only transformed variables
+data_biochem_g <- data_biochem_g %>% select (FREG0_PID,FREG1_Barcode,DLAB_ln15_TC_mmol_L:DLAB_ln86_Oestrogen_E2)
+
+## Spirometry
+data_spiro_g$Fvc <- rowMeans(subset(data_spiro_g, select=c(DSM7_Fvc_1, DSM42_Fvc_2, DSM76_Fvc_3, DSM110_Fvc_4)), na.rm=TRUE)
+data_spiro_g$Fev1 <- rowMeans(subset(data_spiro_g, select=c(DSM8_Fev1_1, DSM43_Fev1_2, DSM77_Fev1_3,DSM111_Fev1_4)), na.rm=TRUE)
+data_spiro_g$Fev1Fvc <- rowMeans(subset(data_spiro_g, select=c(DSM9_Fev1Fvc_1, DSM44_Fev1Fvc_2, DSM78_Fev1Fvc_3,DSM112_Fev1Fvc_4)), na.rm=TRUE)
+data_spiro_g$Pef <- rowMeans(subset(data_spiro_g, select=c(DSM10_Pef_1, DSM45_Pef_2, DSM79_Pef_3,DSM113_Pef_4)), na.rm=TRUE)
+data_spiro_g <- data_spiro_g %>% select(FREG0_PID,FREG1_Barcode,DSM146_FVCmax:DSM149_PEFmax,Fvc:Pef) %>% na.omit()
+
+## Vicorder
+descr_vic<- data_vic_g %>% select (-c(FREG0_PID:FREG14_Visit_number))
+descr_vic$Heart_rate <- rowMeans(subset(descr_vic, select=c(1,23,45)), na.rm=TRUE)
+descr_vic$systolic_pressure <- rowMeans(subset(descr_vic, select=c(2,24,46)), na.rm=TRUE)
+descr_vic$diastolic_pressure <- rowMeans(subset(descr_vic, select=c(3,25,47)), na.rm=TRUE)
+descr_vic$beat_per_minute <- rowMeans(subset(descr_vic, select=c(4,26,48)), na.rm=TRUE)
+descr_vic$pulse_pressure <- rowMeans(subset(descr_vic, select=c(5,27,49)), na.rm=TRUE)
+descr_vic$augmentation <- rowMeans(subset(descr_vic, select=c(6,28,50)), na.rm=TRUE)
+descr_vic$augmentation_index <- rowMeans(subset(descr_vic, select=c(7,29,51)), na.rm=TRUE)
+descr_vic$cardiac_output <- rowMeans(subset(descr_vic, select=c(8,30,52)), na.rm=TRUE)
+descr_vic$tpr <- rowMeans(subset(descr_vic, select=c(9,31,53)), na.rm=TRUE)
+descr_vic$stroke_volume <- rowMeans(subset(descr_vic, select=c(10,32,54)), na.rm=TRUE)
+descr_vic$mapnum <- rowMeans(subset(descr_vic, select=c(11,33,55)), na.rm=TRUE)
+descr_vic$transit_time <- rowMeans(subset(descr_vic, select=c(12,34,56)), na.rm=TRUE)
+descr_vic$pwv <- rowMeans(subset(descr_vic, select=c(13,35,57)), na.rm=TRUE)
+descr_vic$length_test <- rowMeans(subset(descr_vic, select=c(14,36,58)), na.rm=TRUE)
+descr_vic$ppi <- rowMeans(subset(descr_vic, select=c(15,37,59)), na.rm=TRUE)
+descr_vic$pai <- rowMeans(subset(descr_vic, select=c(16,38,60)), na.rm=TRUE)
+descr_vic$aortic_pp <- rowMeans(subset(descr_vic, select=c(17,39,61)), na.rm=TRUE)
+descr_vic$aortic_bp <- rowMeans(subset(descr_vic, select=c(18,40,62)), na.rm=TRUE)
+descr_vic$cardiac_index <- rowMeans(subset(descr_vic, select=c(19,41,63)), na.rm=TRUE)
+descr_vic$esp <- rowMeans(subset(descr_vic, select=c(20,42,64)), na.rm=TRUE)
+descr_vic$espi <- rowMeans(subset(descr_vic, select=c(21,43,65)), na.rm=TRUE)
+descr_vic$sevr <- rowMeans(subset(descr_vic, select=c(22,44,66)), na.rm=TRUE)
+descr_vic$systolic_pressure_OSC <- rowMeans(subset(descr_vic, select=c(67,69,71)), na.rm=TRUE)
+descr_vic$diastolic_pressure_OSC <- rowMeans(subset(descr_vic, select=c(68,70,72)), na.rm=TRUE)
+data_vic_g <- cbind(data_vic_g,descr_vic) %>% select (FREG0_PID:FREG14_Visit_number,Heart_rate:diastolic_pressure_OSC)
+
+setwd("[YOUR DIRECTORY]")
+data_foodgrp <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM") %>% select(-X)
+data_foodgrp <- data_foodgrp %>% dplyr::rename (FREG1_Barcode=Barcode) %>% select(FREG1_Barcode,perkcal_bread_white:perkcal_sauce,
+                perkcal_protein:perkcal_fibre,perkcal_Tf:perkcal_pufa)
+
+## HLQ: iPAQ - calculated separately
+
+setwd("[YOUR DIRECTORY]")
+getwd()
+data_ipaq <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM") %>% select (-X)
+data_ipaq <- data_ipaq %>% dplyr::rename (FREG1_Barcode=Barcode) %>% select (METwalktot_truncate:FREG1_Barcode)
+
+
+## HLQ: binary variables
+data_dictionary_binary <- read_excel("[RELEVANT FILE].xlsx",sheet=1) %>% select (10,3,19,21)
+names(data_dictionary_binary)[1] <- "var_name"
+data_dictionary_binary <- data_dictionary_binary %>% filter (data_dictionary_binary$`HELIOS Station`=='HLQ' & suitable_for_phewas=="yes" &
+  data_dictionary_binary$`Variable type`=="Y/N") %>% select (var_name) 
+
+data_dictionary_binary <- pull(data_dictionary_binary,var_name) # Change the column containing variable name into a vector of string
+
+data_HLQ_g[data_HLQ_g == -999] <- NA 
+data_HLQ_g[data_HLQ_g == -888] <- NA 
+data_HLQ_g[data_HLQ_g == -777] <- NA
+data_HLQ_g[data_HLQ_g == -555] <- NA
+data_HLQ_g[data_HLQ_g == -444] <- NA
+data_HLQ_g[data_HLQ_g == -222] <- NA
+
+data_HLQ_g_binary <- data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,any_of(data_dictionary_binary)) %>%
+  select ( # remove overlaps with components of composite scores
+  - (DHLQ100_Pa1:DHLQ141_Pa40),-(DHLQ310_Asq1:DHLQ327_Asq6_4))
+
+## HLQ: categorical variables
+data_dictionary_cat <- read_excel("[RELEVANT FILE]",sheet=1) %>% select (10,3,19,21)
+names(data_dictionary_cat)[1] <- "var_name"
+data_dictionary_cat <- data_dictionary_cat %>% filter (data_dictionary_cat$`HELIOS Station`=='HLQ' & suitable_for_phewas=="yes" &
+                                                               data_dictionary_cat$`Variable type`=="Option code") %>% select (var_name)
+
+data_dictionary_cat <- pull(data_dictionary_cat,var_name)
+
+data_HLQ_g_cat <- data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,any_of(data_dictionary_cat)) %>%
+  select ( # remove overlaps with components of composite scores
+    -(DHLQ101_Pa2:DHLQ131_Pa22),-(DHLQ150_So3_A:DHLQ161_So3_L),-(DHLQ236_SL2_A:DHLQ251_SL7),-(DHLQ252_PHQ9_1:DHLQ268_GAD7_G),
+    -(DHLQ412_W7Ab_1A:DHLQ422_W7Ab_10)) %>%
+  select (-DHLQ173_S2,-DHLQ174_S2A,-(DHLQ207_A2A:DHLQ212_A3C),-DHLQ468_Op1B,-DHLQ476_Op2A,-DHLQ482_Op3A) %>%
+  select (-DHLQ23_D18,-DHLQ29_J2,-DHLQ84_Ho1,-DHLQ87_D9,
+          -DHLQ134_Pa24,-DHLQ143_So1,
+          -DHLQ171_S1,-DHLQ185_S4Aa,-DHLQ203_S7A,-DHLQ191_S4A,-DHLQ192_S4A1,-DHLQ193_S4A2,
+          -DHLQ204_A1,-DHLQ214_A7,
+          -DHLQ225_Mb1,-DHLQ227_Mb2,-DHLQ228_Mb2A,-DHLQ229_Mb4,-DHLQ230_Mb5,-DHLQ231_Comp1,
+          -DHLQ271_Y8A,-DHLQ274_Sh1,
+          -DHLQ329_Sp3M,-DHLQ330_Sp4M,-DHLQ331_Sp5M,-DHLQ339_Sp8M,-DHLQ340_Sp9M,
+          -DHLQ358_Wh4,-DHLQ359_Sp3W,-DHLQ360_Sp4W,-DHLQ362_W8A,
+          -DHLQ363_W8C,-DHLQ399_Wh6A,-DHLQ400_Wh6B,-DHLQ401_Wh6C,
+          -DHLQ408_W71_A,-DHLQ409_W72_A,-DHLQ410_W73_A,-DHLQ411_W74_A,
+          -DHLQ429_Wh50,-DHLQ431_Wh50B1,-DHLQ432_Wh50B2,-DHLQ433_Wh5A,-DHLQ435_W5Ab,-DHLQ436_W5Ac) 
+  
+data_HLQ_g_cat_ordinal <- data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,
+          DHLQ23_D18,DHLQ29_J2,DHLQ84_Ho1,DHLQ87_D9,
+          DHLQ134_Pa24,DHLQ143_So1,
+          DHLQ171_S1,DHLQ185_S4Aa,DHLQ203_S7A,DHLQ191_S4A,DHLQ192_S4A1,DHLQ193_S4A2,
+          DHLQ204_A1,DHLQ214_A7,
+          DHLQ225_Mb1,DHLQ227_Mb2,DHLQ228_Mb2A,DHLQ229_Mb4,DHLQ230_Mb5,DHLQ231_Comp1,
+          DHLQ271_Y8A,DHLQ274_Sh1) # excluding the gender-specific variables
+  
+# PSQI scoring
+psqi <- data_HLQ %>% select (FREG0_PID,FREG14_Visit_number,DHLQ232_SL1_Bedtime:DHLQ250_SL6)
+psqi$DHLQ232_SL1_Bedtime <- as.POSIXct(psqi$DHLQ232_SL1_Bedtime,format="%H:%M:%S")
+psqi$DHLQ234_SL1B_Awake <- as.POSIXct(psqi$DHLQ234_SL1B_Awake,format="%H:%M:%S")
+psqi <- psqi %>% 
+  mutate (sleepdur=difftime(DHLQ234_SL1B_Awake,DHLQ232_SL1_Bedtime, unit="hours"),
+  sleepdur_correct=ifelse(sleepdur<0,sleepdur+24,sleepdur)) %>% #to correct for midnight
+  select(-DHLQ232_SL1_Bedtime,-DHLQ234_SL1B_Awake,-sleepdur) %>%
+  dplyr::rename(PSQI_sleep_quality=DHLQ247_SL3) %>% # Component 1: Subjective sleep quality
+  mutate (fallasleep= ifelse(DHLQ233_SL1A<=15,0, # Component 2: Sleep latency
+          ifelse (DHLQ233_SL1A>15 & DHLQ233_SL1A<=30,1,
+          ifelse (DHLQ233_SL1A>31 & DHLQ233_SL1A<=60,2,
+          ifelse (DHLQ233_SL1A>61,3,DHLQ233_SL1A))))) %>%
+  mutate (comp2PSQI_5a = select(.,fallasleep,DHLQ236_SL2_A) %>% rowSums()) %>%
+  mutate (PSQI_sleep_latency=
+          ifelse (comp2PSQI_5a>0 & comp2PSQI_5a<=2,1,
+          ifelse (comp2PSQI_5a>2 & comp2PSQI_5a<=4,2,
+          ifelse (comp2PSQI_5a>4 & comp2PSQI_5a<=6,3,comp2PSQI_5a)))) %>%
+  select (-DHLQ233_SL1A,-fallasleep,-DHLQ236_SL2_A,-comp2PSQI_5a) %>%
+  mutate (PSQI_sleep_duration=ifelse (DHLQ235_SL1C<=4.983,3, # Component 3: Sleep duration
+  ifelse (DHLQ235_SL1C>4.983 & DHLQ235_SL1C<=5.983,1, #to prevent category overlap, we assume x hr 59 minutes (0.983 hrs), or x hr 1 minute (0.167 hrs) 
+  ifelse (DHLQ235_SL1C>5.983 & DHLQ235_SL1C<7.0167,2,
+  ifelse (DHLQ235_SL1C>=7.0167,0,DHLQ235_SL1C))))) %>%
+  mutate (sleep_eff_perc=PSQI_sleep_duration/sleepdur_correct*100, # Component 4: Habitual sleep efficiency
+          PSQI_habit_sleep_eff=ifelse (sleep_eff_perc>=85,0,
+                               ifelse (sleep_eff_perc>=75 & sleep_eff_perc<=84,1,
+                               ifelse (sleep_eff_perc>=65 & sleep_eff_perc<=74,2,3))))%>%
+  select (-DHLQ235_SL1C,-sleep_eff_perc) %>% 
+  mutate (comp5_sum= select (.,DHLQ237_SL2_B:DHLQ245_SL2_J) %>% rowSums(), # Component 5: Sleep disturbance
+          PSQI_sleep_disturb= ifelse (comp5_sum>=19,3,
+                              ifelse(comp5_sum>=10 & comp5_sum<=18,2,
+                              ifelse(comp5_sum>=1 & comp5_sum<=9,1,0)))) %>%
+  select (-(DHLQ237_SL2_B:DHLQ245_SL2_J),-comp5_sum) %>%
+  dplyr::rename (PSQI_sleep_med=DHLQ248_SL4) %>% # Component 6: Use of sleeping medication
+  mutate (comp7_sum= select(.,DHLQ249_SL5,DHLQ250_SL6) %>% rowSums()) %>%
+  mutate (PSQI_daytime_dysfunc=ifelse (comp7_sum>=5,3,
+                                ifelse (comp7_sum>=3 & comp7_sum<=4,2,
+                                ifelse (comp7_sum>=1 & comp7_sum<=2,1,0))))%>%
+  select(-DHLQ249_SL5,-DHLQ250_SL6,-comp7_sum) %>%
+  mutate (PSQI_sum= select(.,PSQI_sleep_quality:PSQI_sleep_med,PSQI_sleep_latency:PSQI_daytime_dysfunc) %>% rowSums()) %>%
+  dplyr::rename(PSQI_sleep_dur=sleepdur_correct)
+                                     
+data_HLQ_g_sum <- data_HLQ_g %>%
+  mutate (Soc_sum= select (.,DHLQ150_So3_A:DHLQ161_So3_L) %>% rowSums(), #social support sum
+          PHQ9_sum= select (.,DHLQ252_PHQ9_1:DHLQ260_PHQ9_9) %>% rowSums(), #PHQ-9 sum
+          GAD7_sum= select (.,DHLQ262_GAD7_A:DHLQ268_GAD7_G) %>% rowSums(), #GAD-7 sum
+          pain_sum= select (.,DHLQ292_H13_1:DHLQ304_H13_13) %>% rowSums(), #pain score sum
+          ASQ_sum= select (.,DHLQ310_Asq1:DHLQ327_Asq6_4) %>% rowSums())  %>% #ASQ sum
+  left_join (.,psqi)  %>% # PSQI score and components
+  select (
+  -(DHLQ100_Pa1:DHLQ140_Pa27_Mi),-(DHLQ150_So3_A:DHLQ161_So3_L),-(DHLQ233_SL1A:DHLQ250_SL6),-(DHLQ310_Asq1:DHLQ327_Asq6_4),
+  -(DHLQ412_W7Ab_1A:DHLQ422_W7Ab_10)) %>% # remove individual comp except nap question, PHQ-9 and GAD-7
+  select (-any_of(data_dictionary_binary)) %>% # remove binary variable
+  select (-any_of(data_dictionary_cat)) %>% # remove categorical variable
+  left_join(., ( # add back all age variables that JC may have erroneously categorised as categorical variables
+  data_HLQ_g %>%
+  select (FREG0_PID,FREG14_Visit_number,DHLQ173_S2,DHLQ174_S2A,(DHLQ207_A2A:DHLQ212_A3C),DHLQ468_Op1B,DHLQ476_Op2A,DHLQ482_Op3A))) %>%
+  left_join(.,data_HLQ_g_cat_ordinal) # add back all option_codes variables that is converted to ordinal variables
+  
+# Collapsing the disease age variables, derive minimum age
+data_HLQ_g_sum<- data_HLQ_g_sum %>% rowwise() %>% mutate (Op4_Age= min(c_across(DHLQ549_Op4_A2:DHLQ578_Op4_A31), na.rm=T)) %>%
+  ungroup() %>% select (-c(DHLQ549_Op4_A2:DHLQ578_Op4_A31))
+data_HLQ_g_sum[sapply(data_HLQ_g_sum, is.infinite)] <- NA
+
+
+
+############ PheWAS ############
+## Bring in information about ancestral genetic PCs
+FREG1_Barcode_linkage<- data_core %>%
+  select (FREG0_PID,FREG1_Barcode,FREG14_Visit_number) %>% filter(FREG14_Visit_number==1)
+
+ancestry_PC <-read.delim("[RELEVANT FILE].txt") %>% select (FREG0_PID,grids_meta.ancestry,PC1:PC5) %>% distinct (FREG0_PID, .keep_all=T)
+ancestry_Barcode <- FREG1_Barcode_linkage %>% left_join (.,ancestry_PC) %>% select(FREG1_Barcode,PC1:PC5)
+
+# Create all data list inclusive of 5 ancestry PCs
+data_HELIOS_manhattan_g <- data_imp_g %>% left_join (.,data_dxa1_g) %>% left_join (., data_dxa2_g) %>%
+  left_join(., data_anthro_g) %>% left_join(., data_bp_g) %>% left_join (., data_ecg_g) %>% left_join (., data_us_g) %>%
+  left_join(., data_cog) %>% left_join (., data_eye1_g) %>%
+  left_join(., data_biochem_g) %>% left_join (., data_spiro_g) %>% left_join (., data_treadm_g) %>%
+  left_join(., (data_vic_g %>%
+                  rename_with(~paste0("DVIC_", .),-(FREG0_PID:FREG14_Visit_number)))) %>% left_join (., data_foodgrp) %>% left_join(.,data_ipaq) %>%
+  left_join(., data_HLQ_g_sum) %>%
+  left_join (.,g) %>% left_join (.,data_demog_g) %>%
+  left_join (.,ancestry_Barcode) %>% # data_demog_g cannot be in front somehow does not work
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-DDH1_Barcode,-DDWBA1_Barcode,-DCU14_Plaque,-(DC6S6_Language:DC6S12_Nights_72Hours),
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>% mutate(g=-1*g)
+
+data_HELIOS_manhattan_g$FREG7_Gender <-as.factor (data_HELIOS_manhattan_g$FREG7_Gender)
+data_HELIOS_manhattan_g$FREG5_Ethnic_Group <-as.factor (data_HELIOS_manhattan_g$FREG5_Ethnic_Group)
+
+data_HELIOS_manhattan_g_before_excl <- data_HELIOS_manhattan_g
+
+data_HELIOS_manhattan_g <- data_HELIOS_manhattan_g %>%
+  filter (!is.na(FREG5_Ethnic_Group)) %>% #NA because it's withdrawn participants
+  filter (!FREG5_Ethnic_Group=="O") %>% #remove others
+  filter (!is.na(g)) %>% #remove those with missing g (incomplete or did not complete test)
+  select(-c(DLAB_ln84_FSH:DLAB_ln86_Oestrogen_E2)) # exclude sex-specific variables
+
+data_HELIOS_manhattan_g_aftr_excl <- data_HELIOS_manhattan_g
+
+data_HELIOS_manhattan_g_aftr_gen <- data_HELIOS_manhattan_g_aftr_excl %>%
+  filter (!is.na(PC1))
+
+varlist_HELIOS_manhattan_g <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g)) {
+  varlist_HELIOS_manhattan_g[[i]] <- data_HELIOS_manhattan_g[ , i]}
+names(varlist_HELIOS_manhattan_g) <- colnames(data_HELIOS_manhattan_g)
+
+varlist_HELIOS_manhattan_g <- varlist_HELIOS_manhattan_g[-(354:362)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g <- lapply(varlist_HELIOS_manhattan_g,zscores)
+
+## Create a list of all continuous variables for female-specific variables
+data_HELIOS_manhattan_g_female <- data_biochem_g %>%
+  select (FREG0_PID,FREG1_Barcode,DLAB_ln84_FSH,DLAB_ln85_LH,DLAB_ln86_Oestrogen_E2) %>%
+  left_join (.,data_demog_g) %>%
+  left_join (.,(data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,
+                                       DHLQ398_Wh6,DHLQ358_Wh4,DHLQ359_Sp3W,DHLQ360_Sp4W,
+                                       DHLQ362_W8A,DHLQ363_W8C,DHLQ399_Wh6A, DHLQ400_Wh6B,DHLQ401_Wh6C,
+                                       DHLQ408_W71_A,DHLQ409_W72_A,DHLQ410_W73_A,DHLQ411_W74_A,
+                                       DHLQ428_Wh5,DHLQ429_Wh50,DHLQ430_Wh50A,DHLQ431_Wh50B1,DHLQ432_Wh50B2,DHLQ433_Wh5A,DHLQ435_W5Ab,DHLQ436_W5Ac))) %>%
+  left_join (.,g) %>% # data_demog_g cannot be in front somehow does not work
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>% mutate(g=-1*g) %>%
+  filter(FREG7_Gender=="F")
+
+varlist_HELIOS_manhattan_g_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_female)) {
+  varlist_HELIOS_manhattan_g_female[[i]] <- data_HELIOS_manhattan_g_female[ , i]}
+names(varlist_HELIOS_manhattan_g_female) <- colnames(data_HELIOS_manhattan_g_female)
+
+varlist_HELIOS_manhattan_g_female <- varlist_HELIOS_manhattan_g_female[-(34:39)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g_female <- varlist_HELIOS_manhattan_g_female[-(4:6)]; #WARNING TO REVISE NUMBER: remove gender from list, number to change
+varlist_HELIOS_manhattan_g_female <- lapply(varlist_HELIOS_manhattan_g_female,zscores)
+
+## Create a list of all continuous variables for male-specific variables
+data_HELIOS_manhattan_g_male <- data_demog_g %>%
+  left_join (.,(data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,
+                                       DHLQ328_M2M, DHLQ329_Sp3M, DHLQ330_Sp4M, DHLQ331_Sp5M, DHLQ339_Sp8M, DHLQ340_Sp9M))) %>%
+  left_join (.,g) %>% # data_demog_g cannot be in front somehow does not work
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>% mutate(g=-1*g) %>%
+  filter(FREG7_Gender=="M") %>% as.data.frame()
+
+varlist_HELIOS_manhattan_g_male <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_male)) {
+  varlist_HELIOS_manhattan_g_male[[i]] <- data_HELIOS_manhattan_g_male[ , i]}
+names(varlist_HELIOS_manhattan_g_male) <- colnames(data_HELIOS_manhattan_g_male)
+
+varlist_HELIOS_manhattan_g_male <- varlist_HELIOS_manhattan_g_male[-(16:21)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g_male <- varlist_HELIOS_manhattan_g_male[-(1:3)]; #WARNING TO REVISE NUMBER: remove gender from list, number to change
+varlist_HELIOS_manhattan_g_male <- lapply(varlist_HELIOS_manhattan_g_male,zscores)
+
+## Create a list of all binary variable from HLQ, without sex-specific variables
+data_HELIOS_manhattan_g_bi <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,g) %>%
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,-(DC7R4_Pairing7_Guesses:DC7R10_Stroopink_Avg_inv)) %>%
+  mutate(g=-1*g) %>% 
+  select (-DHLQ526_Op4_T9,-DHLQ529_Op4_T12,-DHLQ540_Op4_T23) %>% # DECLARE: These are the variables that only has 1 level therefore unable to proceed unless we remove them
+  select (-(DHLQ332_Sp6M:DHLQ434_W5Aa),-(DHLQ580_Sc1M_1:DHLQ614_L1_Female_11),-DHLQ615_L1_Female_12) # remove all gender-based variable
+
+data_HELIOS_manhattan_g_bi <- data_HELIOS_manhattan_g_bi %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi)) {
+  varlist_HELIOS_manhattan_g_bi[[i]] <- data_HELIOS_manhattan_g_bi[ , i]}
+names(varlist_HELIOS_manhattan_g_bi) <- colnames(data_HELIOS_manhattan_g_bi)
+
+varlist_HELIOS_manhattan_g_bi <- varlist_HELIOS_manhattan_g_bi[-c(101:109)]; # WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+
+## Create a list of all binary variable from HLQ for female-specific variables
+data_HELIOS_manhattan_g_bi_female <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,g) %>%
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,-(DC7R4_Pairing7_Guesses:DC7R10_Stroopink_Avg_inv)) %>%
+  mutate(g=-1*g) %>% 
+  select (c(FREG7_Gender,FREG8_Age,FREG5_Ethnic_Group,g,
+            DHLQ361_W8:DHLQ434_W5Aa,DHLQ587_Sc1W_1:DHLQ590_Sc1W_4,DHLQ604_L1_Female_1:DHLQ614_L1_Female_11,DHLQ615_L1_Female_12, PC1:PC5)) %>%
+  filter(FREG7_Gender=="F")
+
+data_HELIOS_manhattan_g_bi_female <- data_HELIOS_manhattan_g_bi_female %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi_female)) {
+  varlist_HELIOS_manhattan_g_bi_female[[i]] <- data_HELIOS_manhattan_g_bi_female[ , i]}
+names(varlist_HELIOS_manhattan_g_bi_female) <- colnames(data_HELIOS_manhattan_g_bi_female)
+
+varlist_HELIOS_manhattan_g_bi_female <- varlist_HELIOS_manhattan_g_bi_female[-c(34:38)];# WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+varlist_HELIOS_manhattan_g_bi_female <- varlist_HELIOS_manhattan_g_bi_female[-c(1:4)];
+
+## Create a list of all binary variable from HLQ for male-specific variables
+data_HELIOS_manhattan_g_bi_male <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,g) %>% 
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,-(DC7R4_Pairing7_Guesses:DC7R10_Stroopink_Avg_inv)) %>%
+  mutate(g=-1*g) %>% 
+  select (c(FREG7_Gender,FREG8_Age,FREG5_Ethnic_Group,g,
+            DHLQ332_Sp6M,DHLQ353_Sp11M,DHLQ580_Sc1M_1:DHLQ582_Sc1M_3,DHLQ594_L1_Male_1:DHLQ603_L1_Male_10,PC1:PC5)) %>%
+  filter(FREG7_Gender=="M")
+
+data_HELIOS_manhattan_g_bi_male <- data_HELIOS_manhattan_g_bi_male %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi_male <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi_male)) {
+  varlist_HELIOS_manhattan_g_bi_male[[i]] <- data_HELIOS_manhattan_g_bi_male[ , i]}
+names(varlist_HELIOS_manhattan_g_bi_male) <- colnames(data_HELIOS_manhattan_g_bi_male)
+
+varlist_HELIOS_manhattan_g_bi_male <- varlist_HELIOS_manhattan_g_bi_male[-c(20:24)];
+varlist_HELIOS_manhattan_g_bi_male <- varlist_HELIOS_manhattan_g_bi_male[-c(1:4)];
+
+## Create a list of all categorical variables from HLQ, without sex-specific variables
+data_HELIOS_manhattan_g_cat <- data_HLQ_g_cat %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,g) %>%
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,-(DC7R4_Pairing7_Guesses:DC7R10_Stroopink_Avg_inv)) %>%
+  mutate(g=-1*g) %>%
+  select (-DHLQ25_D10B) %>% #These are the variables that only has 1 level therefore unable to proceed unless we remove them
+  select (-DHLQ428_Wh5,-DHLQ430_Wh50A) # sex-specific variable
+
+varlist_HELIOS_manhattan_g_cat <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_cat)) {
+  varlist_HELIOS_manhattan_g_cat[[i]] <- data_HELIOS_manhattan_g_cat[ , i]}
+names(varlist_HELIOS_manhattan_g_cat) <- colnames(data_HELIOS_manhattan_g_cat)
+
+varlist_HELIOS_manhattan_g_cat <- varlist_HELIOS_manhattan_g_cat[-c(28:36)]; #WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+## Create a list of all categorical variables from HLQ for female-specific variables. There is no male-specific categorical variables
+data_HELIOS_manhattan_g_cat_female <- data_HLQ_g_cat %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,g) %>%
+  left_join (.,ancestry_Barcode) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,-(DC7R4_Pairing7_Guesses:DC7R10_Stroopink_Avg_inv)) %>%
+  mutate(g=-1*g) %>%  select (DHLQ428_Wh5,DHLQ430_Wh50A,FREG5_Ethnic_Group:g,PC1:PC5) # sex-specific variable
+
+varlist_HELIOS_manhattan_g_cat_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_cat_female)) {
+  varlist_HELIOS_manhattan_g_cat_female[[i]] <- data_HELIOS_manhattan_g_cat_female[ , i]}
+names(varlist_HELIOS_manhattan_g_cat_female) <- colnames(data_HELIOS_manhattan_g_cat_female)
+
+varlist_HELIOS_manhattan_g_cat_female <- varlist_HELIOS_manhattan_g_cat_female[-c(3:11)]; #WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+## PheWAS function
+PheWAS_demog <-function(x){
+  y <- summary(lm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+                    FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2) +
+                    PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_female <-function(x){
+  y <- summary(lm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2) +
+                    PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_female))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_male <-function(x){
+  y <- summary(lm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2) +
+                    PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_male))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary <-function(x){
+  y <- glm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+             FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2) +
+             PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_female <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2) +
+             PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_male <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2) +
+             PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi_male,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_cat <-function(x){
+  y <- glm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group + FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2) +
+             PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_cat,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+PheWAS_demog_cat_female <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2)  +
+             PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_cat_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+## Perform PheWAS
+varlist2_HELIOS_manhattan_g_demog <- lapply(varlist_HELIOS_manhattan_g,PheWAS_demog)
+df_manhattan_demog <- bind_rows(varlist2_HELIOS_manhattan_g_demog, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+          var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_demog_female <- lapply(varlist_HELIOS_manhattan_g_female,PheWAS_demog_female)
+df_manhattan_demog_female <- bind_rows(varlist2_HELIOS_manhattan_g_demog_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_demog_male <- lapply(varlist_HELIOS_manhattan_g_male,PheWAS_demog_male)
+df_manhattan_demog_male <- bind_rows(varlist2_HELIOS_manhattan_g_demog_male, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_bi <- lapply(varlist_HELIOS_manhattan_g_bi,PheWAS_demog_binary)
+df_manhattan_bi <- bind_rows(varlist2_HELIOS_manhattan_g_bi, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_bi_female <- lapply(varlist_HELIOS_manhattan_g_bi_female,PheWAS_demog_binary_female)
+df_manhattan_bi_female <- bind_rows(varlist2_HELIOS_manhattan_g_bi_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_bi_male <- lapply(varlist_HELIOS_manhattan_g_bi_male,PheWAS_demog_binary_male)
+df_manhattan_bi_male <- bind_rows(varlist2_HELIOS_manhattan_g_bi_male, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_cat <- lapply(varlist_HELIOS_manhattan_g_cat,PheWAS_demog_cat)
+df_manhattan_cat <- bind_rows(varlist2_HELIOS_manhattan_g_cat, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+varlist2_HELIOS_manhattan_g_cat_female <- lapply(varlist_HELIOS_manhattan_g_cat_female,PheWAS_demog_cat_female)
+df_manhattan_cat_female <- bind_rows(varlist2_HELIOS_manhattan_g_cat_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_demog_female,df_manhattan_demog_male)
+df_manhattan_bi <- rbind (df_manhattan_bi,df_manhattan_bi_female,df_manhattan_bi_male)
+df_manhattan_cat <- rbind (df_manhattan_cat,df_manhattan_cat_female)
+
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_bi)
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_cat)
+
+df_manhattan_demog <- df_manhattan_demog %>% mutate (assessment=ifelse(grepl('DBI',var),'bioimpedance',ifelse(grepl('BMI|waist_mean|hip_mean|WHR',var),'anthropometry',
+      ifelse(grepl('Sbp|Dbp|Hr',var),'blood_pressure', ifelse(grepl('grip_left|grip_right',var),'hand grip',                 
+      ifelse(grepl('DDH|DDL|DDWBA|DDWBB',var),'DEXA', ifelse(grepl('DERS',var),'ECG',     
+      ifelse(grepl('DCU',var),'ultrasound', ifelse(grepl('DC7R',var),'cognition',
+      ifelse(grepl('DVAC',var),'visual acuity', ifelse(grepl('DLAB',var),'biochemistry',
+      ifelse(grepl('DSM|Fvc|Fev1|Fev1Fvc|Pef',var),'spirometry', ifelse(grepl('FTT',var),'treadmill',
+      ifelse(grepl('perkcal_',var),'dietary intake',
+      ifelse(grepl('DVIC',var),'vicorder',
+      ifelse(grepl('DHLQ',var),'HLQ','HLQ'))))))))))))))))
+
+df_manhattan_demog$assessment <- as.factor(df_manhattan_demog$assessment)
+df_manhattan_demog_sanscognit <-df_manhattan_demog %>% filter(assessment!="Cognition")
+
+df_manhattan_demog_sanscognit$pcat <- df_manhattan_demog_sanscognit$p < 5e-15 
+
+
+setwd("[YOUR DIRECTORY]")
+data_dictionary <- read_excel("[RELEVANT FILE].xlsx",sheet=1) %>% select (10,18,21)
+names(data_dictionary)[1] <- "var"
+data_dictionary <- data_dictionary %>% filter (suitable_for_phewas=="yes") %>% select (-suitable_for_phewas)
+
+df_manhattan_demog_sanscognit_export <- df_manhattan_demog_sanscognit %>% left_join (.,data_dictionary)
+write.csv(df_manhattan_demog_sanscognit_export,"PheWAS_g_demog_quadint_PCances_DDMMYYYY_table.csv")
+
+
+## FDR correction of the participant
+df_manhattan_demog$p_holm <-p.adjust(df_manhattan_demog$p, method = "holm", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_hochberg<-p.adjust(df_manhattan_demog$p, method = "hochberg", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_hommel<-p.adjust(df_manhattan_demog$p, method = "hommel", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_bf<-p.adjust(df_manhattan_demog$p, method = "bonferroni", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_BH<-p.adjust(df_manhattan_demog$p, method = "BH", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_BY<-p.adjust(df_manhattan_demog$p, method = "BY", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_fdr<-p.adjust(df_manhattan_demog$p, method = "fdr", n=length(df_manhattan_demog$p))
+
+df_manhattan_demog_FDR <- df_manhattan_demog %>% mutate (
+  pcat_holm = case_when(p_holm < 5e-8~"TRUE",T~"FALSE"),
+  pcat_hochberg = case_when(p_hochberg < 5e-8~"TRUE",T~"FALSE"),
+  pcat_hommel = case_when(p_hommel < 5e-8~"TRUE",T~"FALSE"),
+  pcat_bf = case_when(p_bf < 5e-8~"TRUE",T~"FALSE"),
+  pcat_BH = case_when(p_BH < 5e-8~"TRUE",T~"FALSE"),
+  pcat_BY = case_when(p_BY < 5e-8~"TRUE",T~"FALSE"),
+  pcat_fdr = case_when(p_fdr < 5e-8~"TRUE",T~"FALSE")
+)
+
+df_manhattan_demog_sanscognit_FDR <-df_manhattan_demog_FDR %>% filter(assessment!="Cognition")
+
+df_manhattan_demog_sanscognit_FDR <-df_manhattan_demog_sanscognit_FDR[order(df_manhattan_demog_sanscognit_FDR$assessment), ]
+
+
+## PheWAS function with beta association or OR, with ancestry
+PheWAS_demog_beta <-function(x){
+  y <- summary(lm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+                    FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2) +PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_female_beta <-function(x){
+  y <- summary(lm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_female))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_male_beta <-function(x){
+  y <- summary(lm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_male))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_beta <-function(x){
+  y <- glm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+             FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_female_beta <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_male_beta <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_bi_male,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_cat_beta <-function(x){
+  y <- glm(x~ g+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group + FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2)+PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_cat,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+PheWAS_demog_cat_female_beta <-function(x){
+  y <- glm(x~ g+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2) +PC1 + PC2 + PC3 + PC4 + PC5, data= data_HELIOS_manhattan_g_cat_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "g") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+varlist2_HELIOS_lollipop_g_demog <- lapply(varlist_HELIOS_manhattan_g,PheWAS_demog_beta)
+df_lollipop_demog <- bind_rows(varlist2_HELIOS_lollipop_g_demog, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_demog_female <- lapply(varlist_HELIOS_manhattan_g_female,PheWAS_demog_female_beta)
+df_lollipop_demog_female <- bind_rows(varlist2_HELIOS_lollipop_g_demog_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_demog_male <- lapply(varlist_HELIOS_manhattan_g_male,PheWAS_demog_male_beta)
+df_lollipop_demog_male <- bind_rows(varlist2_HELIOS_lollipop_g_demog_male, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_bi <- lapply(varlist_HELIOS_manhattan_g_bi,PheWAS_demog_binary_beta)
+df_lollipop_bi <- bind_rows(varlist2_HELIOS_lollipop_g_bi, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_bi_female <- lapply(varlist_HELIOS_manhattan_g_bi_female,PheWAS_demog_binary_female_beta)
+df_lollipop_bi_female <- bind_rows(varlist2_HELIOS_lollipop_g_bi_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_bi_male <- lapply(varlist_HELIOS_manhattan_g_bi_male,PheWAS_demog_binary_male_beta)
+df_lollipop_bi_male <- bind_rows(varlist2_HELIOS_lollipop_g_bi_male, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_cat <- lapply(varlist_HELIOS_manhattan_g_cat,PheWAS_demog_cat_beta)
+df_lollipop_cat <- bind_rows(varlist2_HELIOS_lollipop_g_cat, .id = "var") %>%
+  filter (var!="g" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+varlist2_HELIOS_lollipop_g_cat_female <- lapply(varlist_HELIOS_manhattan_g_cat_female,PheWAS_demog_cat_female_beta)
+df_lollipop_cat_female <- bind_rows(varlist2_HELIOS_lollipop_g_cat_female, .id = "var") %>%
+  filter (var!="g" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group" &
+            var!="PC1" & var!="PC2" & var!="PC3" & var!="PC4" & var!="PC5")
+
+
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_demog_female,df_lollipop_demog_male)
+df_lollipop_bi <- rbind (df_lollipop_bi,df_lollipop_bi_female,df_lollipop_bi_male)
+df_lollipop_cat <- rbind (df_lollipop_cat,df_lollipop_cat_female)
+
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_bi)
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_cat)
+
+df_lollipop_demog <- df_lollipop_demog %>% mutate (assessment=ifelse(grepl('DBI',var),'bioimpedance',ifelse(grepl('BMI|waist_mean|hip_mean|WHR',var),'anthropometry',
+                                                              ifelse(grepl('Sbp|Dbp|Hr',var),'blood pressure', ifelse(grepl('grip_left|grip_right',var),'hand grip',
+                                                              ifelse(grepl('DDH|DDL|DDWBA|DDWBB',var),'DEXA', ifelse(grepl('DERS',var),'ECG', 
+                                                              ifelse(grepl('DCU',var),'ultrasound', ifelse(grepl('DC7R',var),'cognition',
+                                                              ifelse(grepl('DVAC',var),'visual acuity', ifelse(grepl('DLAB',var),'biochemistry',
+                                                              ifelse(grepl('DSM|Fvc|Fev1|Fev1Fvc|Pef',var),'spirometry', ifelse(grepl('FTT',var),'treadmill',
+                                                              ifelse(grepl('perkcal_',var),'dietary intake',
+                                                              ifelse(grepl('DVIC',var),'vicorder',
+                                                              ifelse(grepl('DHLQ',var),'HLQ','HLQ'))))))))))))))))
+
+df_lollipop_demog$assessment <- as.factor(df_lollipop_demog$assessment)
+df_lollipop_demog_sanscognit <-df_lollipop_demog %>% filter(assessment!="cognition")
+
+df_lollipop_demog_sanscognit$pcat <- df_lollipop_demog_sanscognit$p < 8e-5 
+
+# Convert beta to -1 or +1, so that we can have the indication of direction and simpler diagram
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% mutate (beta_bi=
+                                                                           case_when(beta<=-7.761055e-14~-1,TRUE~1))
+
+df_lollipop_demog_sanscognit$p_fdr<-p.adjust(df_lollipop_demog_sanscognit$p, method = "fdr", n=length(df_lollipop_demog_sanscognit$p))
+
+
+# Remove spurious associations, see 20230919_g_phewas slide deck for further details
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% filter (var!="DHLQ495_Op4_9" & var !="DHLQ610_L1_Female_7") 
+
+# Export spreadsheet before insertion of empty rows
+data_dictionary <- read_excel("SG100K Data Dictionary - v42_gphewas_varscreen.xlsx",sheet=1) %>% select (10,18,21)
+names(data_dictionary)[1] <- "var"
+data_dictionary <- data_dictionary %>% filter (suitable_for_phewas=="yes") %>% select (-suitable_for_phewas)
+
+df_lollipop_demog_sanscognit_export <- df_lollipop_demog_sanscognit %>% left_join (.,data_dictionary)
+write.csv(df_lollipop_demog_sanscognit_export,"PheWAS_g_demog_quadint_PCances_DDMMYYYY_table.csv",row.names=F)
+
+
+
+# Insert 10 empty rows per assessment to give some space per mini volcano
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%  group_split(assessment) %>%
+  map_dfr(~ .x %>% 
+            add_row(assessment = first(.x$assessment),
+                    var=c("a","b","c","d","e","f","g","h","i","j"),
+                    beta=1, p_fdr=NA,.after = 0))
+df_lollipop_demog_sanscognit$var2<- paste(df_lollipop_demog_sanscognit$var,df_lollipop_demog_sanscognit$assessment)
+
+# Rename the top 20 into more human readable text for labeling
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%
+  mutate(across('var', str_replace, 'DHLQ231_Comp1', 'familiar computer')) %>%
+  mutate(across('var', str_replace, 'DHLQ23_D18', 'TYE')) %>%
+  mutate(across('var', str_replace, 'DHLQ87_D9', 'household income')) %>%
+  mutate(across('var', str_replace, 'DHLQ229_Mb4', 'freq mobile')) %>%
+  mutate(across('var', str_replace, 'DHLQ225_Mb1', 'mobile use year')) %>%
+  mutate(across('var', str_replace, 'DHLQ84_Ho1', 'housing type')) %>%
+  mutate(across('var', str_replace, 'DSM149_PEFmax', 'PEFmax')) %>%
+  mutate(across('var', str_replace, 'DHLQ278_E2', 'self rate eyesight')) %>%
+  mutate(across('var', str_replace, 'DLAB_ln38_Wbc_X10_9_L', 'WBC')) %>%
+  mutate(across('var', str_replace, 'DSM146_FVCmax', 'FVCmax')) %>%
+  mutate(across('var', str_replace, 'DHLQ504_Op4_18', 'myopia')) %>%
+  mutate(across('var', str_replace, 'DHLQ38_Jp1', 'office work')) %>%
+  mutate(across('var', str_replace, 'DHLQ535_Op4_T18', 'myopia treatment')) %>%
+  mutate(across('var', str_replace, 'DBI13_Height', 'height')) %>%
+  mutate(across('var', str_replace, 'DLAB_ln39_Neup_X10_9_L', 'neutrophil')) %>%
+  mutate(across('var', str_replace, 'DHLQ22_D20', 'own car')) %>%
+  mutate(across('var', str_replace, 'DBI178_Tbw_Ffm', 'TBW/FFM')) # additional one only visible in PC ancestry
+
+# Switch beta direction because the questions were scaled in opposite direction.
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%
+  mutate (beta_bi=
+            case_when(var=="familiar computer"~1,
+                      var=="freq mobile"~1,
+                      var=="housing type"~1,
+                      TRUE~beta_bi)) %>%
+  mutate (beta=
+            case_when(var=="familiar computer"~beta*-1,
+                      var=="freq mobile"~beta*-1,
+                      var=="housing type"~beta*-1,
+                      TRUE~beta))
+
+tiff(file="PheWAS_g_demog_quadint_PCances_DDMMYYYY_FDR.tiff",
+     width=10, height=5, units="in", res=300)
+df_lollipop_demog_sanscognit %>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=-log(p_fdr),colour=assessment,shape=assessment,size=-log(p_fdr))) +
+  theme_classic() + geom_jitter()+
+  xlab("")+ylab("-log(p), FDR adjusted")+
+  scale_shape_manual(values=c(15,1,16,2,17,5,18,6,19,0,15,1,16,2))+
+  geom_text_repel(data=df_lollipop_demog_sanscognit %>% filter(-log(p_fdr)>35),
+                  aes(label=var),color="grey50", size=3.5,
+                  force=5, max.iter=1000, max.overlaps=20) +
+  guides(colour = guide_legend(override.aes = list(size = 3.5))) +
+  guides(shape = guide_legend(override.aes = list(size = 3.5))) +
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),legend.position = "top",legend.title=element_blank())+
+  ggtitle ("PheWAS of cognitive function 'g' to HELIOS Study variables, adjusted for ancestry PCs")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+tiff(file="PheWAS_g_demog_quadint_PCances_DDMMYYYY_FDR_nolegend.tiff",
+     width=10, height=6, units="in", res=300)
+df_lollipop_demog_sanscognit %>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=-log(p_fdr),colour=assessment,shape=assessment,size=-log(p_fdr))) +
+  theme_classic() + geom_jitter()+
+  xlab("")+ylab("-log(p), FDR adjusted")+
+  scale_shape_manual(values=c(15,1,16,2,17,5,18,6,19,0,15,1,16,2))+
+  geom_text_repel(data=df_lollipop_demog_sanscognit %>% filter(-log(p_fdr)>35),
+                  aes(label=var),color="grey50", size=3.5,
+                  force=5, max.iter=1000, max.overlaps=20) +
+  guides(colour = guide_legend(override.aes = list(size = 3.5))) +
+  guides(shape = guide_legend(override.aes = list(size = 3.5))) +
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),legend.position = "none",legend.title=element_blank())+
+  ylim(0,100)+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+# This is binary version, arranged based on beta value
+tiff(file="PheWAS_g_demog_quadint_PCances_DDMMYYYY_beta.tiff",
+     width=10, height=2, units="in", res=300)
+df_lollipop_demog_sanscognit%>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=beta_bi,colour=assessment)) +
+  theme_classic() +
+  geom_segment(aes(x=var2, xend=var2, y=0, yend=beta_bi))+ylab("beta (binary)")+
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),
+         legend.position = "none",
+         axis.title.x=element_blank())+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood_pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+############ Polychoric correlation for binary variables
+library(EFA.dimensions)
+HELIOS_manhattan_g_bi <- data_HELIOS_manhattan_g_bi %>% select (-(FREG5_Ethnic_Group:PC5)) %>% mutate_if(is.factor, as.numeric)
+HELIOS_manhattan_g_bi_female <- data_HELIOS_manhattan_g_bi_female %>% select (-c(FREG7_Gender:g,PC1:PC5)) %>% mutate_if(is.factor, as.numeric)
+HELIOS_manhattan_g_bi_male <- data_HELIOS_manhattan_g_bi_male %>% select (-c(FREG7_Gender:g,DHLQ600_L1_Male_7,PC1:PC5)) %>% mutate_if(is.factor, as.numeric)
+
+polycor_bi <- POLYCHORIC_R(HELIOS_manhattan_g_bi)
+polycor_bi_female <- POLYCHORIC_R(HELIOS_manhattan_g_bi_female)
+polycor_bi_male <- POLYCHORIC_R(HELIOS_manhattan_g_bi_male)
+
+tiff(file="corr_HELIOS_polycor_HLQ_bi_g_phewasg.tiff",
+     width=6, height=6, units="in", res=300)
+corrplot(polycor_bi,addgrid.col = "gray80", tl.cex=0.25,tl.col = "black")
+dev.off()
+
+tiff(file="corr_HELIOS_polycor_HLQ_bi_female_g_phewasg.tiff",
+     width=4, height=4, units="in", res=300)
+corrplot(polycor_bi_female,addgrid.col = "gray80", tl.cex=0.5,tl.col = "black")
+dev.off()
+
+tiff(file="corr_HELIOS_polycor_HLQ_bi_male_g_phewasg.tiff",
+     width=4, height=4, units="in", res=300)
+corrplot(polycor_bi_male,addgrid.col = "gray80", tl.cex=0.5,tl.col = "black")
+dev.off()
+
+
+############ Sensitivity analysis PheWAS with reaction time
+# Recreate all data list
+data_HELIOS_manhattan_g <- data_imp_g %>% left_join (.,data_dxa1_g) %>% left_join (., data_dxa2_g) %>%
+  left_join(., data_anthro_g) %>% left_join(., data_bp_g) %>% left_join (., data_ecg_g) %>% left_join (., data_us_g) %>%
+  left_join(., data_cog) %>% left_join (., data_eye1_g) %>%
+  left_join(., data_biochem_g) %>% left_join (., data_spiro_g) %>% left_join (., data_treadm_g) %>%
+  left_join(., (data_vic_g %>%
+                  rename_with(~paste0("DVIC_", .),-(FREG0_PID:FREG14_Visit_number)))) %>% left_join (., data_foodgrp) %>% left_join(.,data_ipaq) %>%
+  left_join(., data_HLQ_g_sum) %>%
+  left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>% left_join (.,data_demog_g) %>% # data_demog_g cannot be in front somehow does not work
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-DDH1_Barcode,-DDWBA1_Barcode,-DCU14_Plaque,-(DC6S6_Language:DC6S12_Nights_72Hours),
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>% mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv))
+
+data_HELIOS_manhattan_g$FREG7_Gender <-as.factor (data_HELIOS_manhattan_g$FREG7_Gender)
+data_HELIOS_manhattan_g$FREG5_Ethnic_Group <-as.factor (data_HELIOS_manhattan_g$FREG5_Ethnic_Group)
+data_HELIOS_manhattan_g <- data_HELIOS_manhattan_g %>%
+  filter (!is.na(FREG5_Ethnic_Group)) %>% #NA because it's withdrawn participants
+  filter (!FREG5_Ethnic_Group=="O") %>% #remove others
+  filter (!is.na(DC7R6_React_Avg_inv)) %>% #remove those with missing reaction time
+  select(-c(DLAB_ln84_FSH:DLAB_ln86_Oestrogen_E2)) # exclude sex-specific variables
+
+varlist_HELIOS_manhattan_g <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g)) {
+  varlist_HELIOS_manhattan_g[[i]] <- data_HELIOS_manhattan_g[ , i]}
+names(varlist_HELIOS_manhattan_g) <- colnames(data_HELIOS_manhattan_g)
+
+varlist_HELIOS_manhattan_g <- varlist_HELIOS_manhattan_g[-(351:354)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g <- lapply(varlist_HELIOS_manhattan_g,zscores)
+
+## Create a list of all continuous variables for female-specific variables
+data_HELIOS_manhattan_g_female <- data_biochem_g %>%
+  select (FREG0_PID,FREG1_Barcode,DLAB_ln84_FSH,DLAB_ln85_LH,DLAB_ln86_Oestrogen_E2) %>%
+  left_join (.,data_demog_g) %>%
+  left_join (.,(data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,
+                                       DHLQ398_Wh6,DHLQ358_Wh4,DHLQ359_Sp3W,DHLQ360_Sp4W,
+                                       DHLQ362_W8A,DHLQ363_W8C,DHLQ399_Wh6A, DHLQ400_Wh6B,DHLQ401_Wh6C,
+                                       DHLQ408_W71_A,DHLQ409_W72_A,DHLQ410_W73_A,DHLQ411_W74_A,
+                                       DHLQ428_Wh5,DHLQ429_Wh50,DHLQ430_Wh50A,DHLQ431_Wh50B1,DHLQ432_Wh50B2,DHLQ433_Wh5A,DHLQ435_W5Ab,DHLQ436_W5Ac))) %>%
+  left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>% # data_demog_g cannot be in front somehow does not work
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>%
+  filter(FREG7_Gender=="F")
+
+varlist_HELIOS_manhattan_g_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_female)) {
+  varlist_HELIOS_manhattan_g_female[[i]] <- data_HELIOS_manhattan_g_female[ , i]}
+names(varlist_HELIOS_manhattan_g_female) <- colnames(data_HELIOS_manhattan_g_female)
+
+varlist_HELIOS_manhattan_g_female <- varlist_HELIOS_manhattan_g_female[-(28)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g_female <- varlist_HELIOS_manhattan_g_female[-(4:6)]; #WARNING TO REVISE NUMBER: remove gender from list, number to change
+varlist_HELIOS_manhattan_g_female <- lapply(varlist_HELIOS_manhattan_g_female,zscores)
+
+## Create a list of all continuous variables for male-specific variables
+data_HELIOS_manhattan_g_male <- data_demog_g %>%
+  left_join (.,(data_HLQ_g %>% select (FREG0_PID,FREG14_Visit_number,
+                                       DHLQ328_M2M, DHLQ329_Sp3M, DHLQ330_Sp4M, DHLQ331_Sp5M, DHLQ339_Sp8M, DHLQ340_Sp9M))) %>%
+  left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>% # data_demog_g cannot be in front somehow does not work
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,-FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase)  %>%
+  filter(FREG7_Gender=="M") %>% as.data.frame()
+
+varlist_HELIOS_manhattan_g_male <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_male)) {
+  varlist_HELIOS_manhattan_g_male[[i]] <- data_HELIOS_manhattan_g_male[ , i]}
+names(varlist_HELIOS_manhattan_g_male) <- colnames(data_HELIOS_manhattan_g_male)
+
+varlist_HELIOS_manhattan_g_male <- varlist_HELIOS_manhattan_g_male[-(10)]; #WARNING TO REVISE NUMBER: remove ethnic group from list, number to change
+varlist_HELIOS_manhattan_g_male <- varlist_HELIOS_manhattan_g_male[-(1:3)]; #WARNING TO REVISE NUMBER: remove gender from list, number to change
+varlist_HELIOS_manhattan_g_male <- lapply(varlist_HELIOS_manhattan_g_male,zscores)
+
+## Create a list of all binary variable from HLQ, without sex-specific variables
+data_HELIOS_manhattan_g_bi <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>%
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>%
+  select (-DHLQ526_Op4_T9,-DHLQ529_Op4_T12,-DHLQ540_Op4_T23) %>% # DECLARE: These are the variables that only has 1 level therefore unable to proceed unless we remove them
+  select (-(DHLQ332_Sp6M:DHLQ434_W5Aa),-(DHLQ580_Sc1M_1:DHLQ614_L1_Female_11),-DHLQ615_L1_Female_12) # remove all gender-based variable
+
+data_HELIOS_manhattan_g_bi <- data_HELIOS_manhattan_g_bi %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi)) {
+  varlist_HELIOS_manhattan_g_bi[[i]] <- data_HELIOS_manhattan_g_bi[ , i]}
+names(varlist_HELIOS_manhattan_g_bi) <- colnames(data_HELIOS_manhattan_g_bi)
+
+varlist_HELIOS_manhattan_g_bi <- varlist_HELIOS_manhattan_g_bi[-c(101:104)]; # WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+
+## Create a list of all binary variable from HLQ for female-specific variables
+data_HELIOS_manhattan_g_bi_female <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>%
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>%
+  select (c(FREG7_Gender,FREG8_Age,FREG5_Ethnic_Group,DC7R6_React_Avg_inv,
+            DHLQ361_W8:DHLQ434_W5Aa,DHLQ587_Sc1W_1:DHLQ590_Sc1W_4,DHLQ604_L1_Female_1:DHLQ614_L1_Female_11,DHLQ615_L1_Female_12)) %>%
+  filter(FREG7_Gender=="F")
+
+data_HELIOS_manhattan_g_bi_female <- data_HELIOS_manhattan_g_bi_female %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi_female)) {
+  varlist_HELIOS_manhattan_g_bi_female[[i]] <- data_HELIOS_manhattan_g_bi_female[ , i]}
+names(varlist_HELIOS_manhattan_g_bi_female) <- colnames(data_HELIOS_manhattan_g_bi_female)
+
+varlist_HELIOS_manhattan_g_bi_female <- varlist_HELIOS_manhattan_g_bi_female[-c(1:4)]; # WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+## Create a list of all binary variable from HLQ for male-specific variables
+data_HELIOS_manhattan_g_bi_male <- data_HLQ_g_binary %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>%
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>%
+  select (c(FREG7_Gender,FREG8_Age,FREG5_Ethnic_Group,DC7R6_React_Avg_inv,
+            DHLQ332_Sp6M,DHLQ353_Sp11M,DHLQ580_Sc1M_1:DHLQ582_Sc1M_3,DHLQ594_L1_Male_1:DHLQ603_L1_Male_10)) %>%
+  filter(FREG7_Gender=="M")
+
+data_HELIOS_manhattan_g_bi_male <- data_HELIOS_manhattan_g_bi_male %>% replace(is.na(.), 0) # Alternatively, replace all NA as 0
+
+varlist_HELIOS_manhattan_g_bi_male <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_bi_male)) {
+  varlist_HELIOS_manhattan_g_bi_male[[i]] <- data_HELIOS_manhattan_g_bi_male[ , i]}
+names(varlist_HELIOS_manhattan_g_bi_male) <- colnames(data_HELIOS_manhattan_g_bi_male)
+
+varlist_HELIOS_manhattan_g_bi_male <- varlist_HELIOS_manhattan_g_bi_male[-c(1:4)];
+
+## Create a list of all categorical variables from HLQ, without sex-specific variables
+data_HELIOS_manhattan_g_cat <- data_HLQ_g_cat %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>%
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase) %>%
+  select (-DHLQ25_D10B) %>% #These are the variables that only has 1 level therefore unable to proceed unless we remove them
+  select (-DHLQ428_Wh5,-DHLQ430_Wh50A) # sex-specific variable
+
+varlist_HELIOS_manhattan_g_cat <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_cat)) {
+  varlist_HELIOS_manhattan_g_cat[[i]] <- data_HELIOS_manhattan_g_cat[ , i]}
+names(varlist_HELIOS_manhattan_g_cat) <- colnames(data_HELIOS_manhattan_g_cat)
+
+varlist_HELIOS_manhattan_g_cat <- varlist_HELIOS_manhattan_g_cat[-c(28:31)]; #WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+## Create a list of all categorical variables from HLQ for female-specific variables. There is no male-specific categorical variables
+data_HELIOS_manhattan_g_cat_female <- data_HLQ_g_cat %>%
+  mutate_if(is.integer,as.factor) %>% select (-FREG14_Visit_number) %>% # change all binary to factors
+  left_join (.,data_demog_g) %>% left_join (.,(g %>% select (FREG1_Barcode,DC7R6_React_Avg_inv))) %>%
+  mutate (DC7R6_React_Avg_inv=zscores(DC7R6_React_Avg_inv)) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number,
+         -FREG4_Nationality,-FREG6_Ethnicity_NRIC,-FREG13_Study_phase,) %>%
+  select (DHLQ428_Wh5,DHLQ430_Wh50A,FREG5_Ethnic_Group:DC7R6_React_Avg_inv) # sex-specific variable
+
+varlist_HELIOS_manhattan_g_cat_female <- list ()
+for(i in 1:ncol(data_HELIOS_manhattan_g_cat_female)) {
+  varlist_HELIOS_manhattan_g_cat_female[[i]] <- data_HELIOS_manhattan_g_cat_female[ , i]}
+names(varlist_HELIOS_manhattan_g_cat_female) <- colnames(data_HELIOS_manhattan_g_cat_female)
+
+varlist_HELIOS_manhattan_g_cat_female <- varlist_HELIOS_manhattan_g_cat_female[-c(3:6)]; #WARNING TO REVISE NUMBER: remove ethnic group, age, gender and g from list, number to change
+
+## PheWAS function
+PheWAS_demog <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+                    FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_female <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_female))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_male <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_male))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+             FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_female <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_male <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi_male,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_cat <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group + FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g_cat,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+PheWAS_demog_cat_female <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_cat_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(4)
+  names(y)[1]<-"p"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+## Perform PheWAS
+varlist2_HELIOS_manhattan_g_demog <- lapply(varlist_HELIOS_manhattan_g,PheWAS_demog)
+df_manhattan_demog <- bind_rows(varlist2_HELIOS_manhattan_g_demog, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_demog_female <- lapply(varlist_HELIOS_manhattan_g_female,PheWAS_demog_female)
+df_manhattan_demog_female <- bind_rows(varlist2_HELIOS_manhattan_g_demog_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_demog_male <- lapply(varlist_HELIOS_manhattan_g_male,PheWAS_demog_male)
+df_manhattan_demog_male <- bind_rows(varlist2_HELIOS_manhattan_g_demog_male, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_bi <- lapply(varlist_HELIOS_manhattan_g_bi,PheWAS_demog_binary)
+df_manhattan_bi <- bind_rows(varlist2_HELIOS_manhattan_g_bi, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_bi_female <- lapply(varlist_HELIOS_manhattan_g_bi_female,PheWAS_demog_binary_female)
+df_manhattan_bi_female <- bind_rows(varlist2_HELIOS_manhattan_g_bi_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_bi_male <- lapply(varlist_HELIOS_manhattan_g_bi_male,PheWAS_demog_binary_male)
+df_manhattan_bi_male <- bind_rows(varlist2_HELIOS_manhattan_g_bi_male, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_cat <- lapply(varlist_HELIOS_manhattan_g_cat,PheWAS_demog_cat)
+df_manhattan_cat <- bind_rows(varlist2_HELIOS_manhattan_g_cat, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+varlist2_HELIOS_manhattan_g_cat_female <- lapply(varlist_HELIOS_manhattan_g_cat_female,PheWAS_demog_cat_female)
+df_manhattan_cat_female <- bind_rows(varlist2_HELIOS_manhattan_g_cat_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_demog_female,df_manhattan_demog_male)
+df_manhattan_bi <- rbind (df_manhattan_bi,df_manhattan_bi_female,df_manhattan_bi_male)
+df_manhattan_cat <- rbind (df_manhattan_cat,df_manhattan_cat_female)
+
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_bi)
+df_manhattan_demog <- rbind (df_manhattan_demog,df_manhattan_cat)
+
+df_manhattan_demog <- df_manhattan_demog %>% mutate (assessment=ifelse(grepl('DBI',var),'bioimpedance',ifelse(grepl('BMI|waist_mean|hip_mean|WHR',var),'anthropometry',
+                                                     ifelse(grepl('Sbp|Dbp|Hr',var),'blood pressure', ifelse(grepl('grip_left|grip_right',var),'hand grip',                 
+                                                     ifelse(grepl('DDH|DDL|DDWBA|DDWBB',var),'DEXA', ifelse(grepl('DERS',var),'ECG',     
+                                                     ifelse(grepl('DCU',var),'ultrasound', ifelse(grepl('DC7R',var),'cognition',
+                                                     ifelse(grepl('DVAC',var),'visual acuity', ifelse(grepl('DLAB',var),'biochemistry',
+                                                     ifelse(grepl('DSM|Fvc|Fev1|Fev1Fvc|Pef',var),'spirometry', ifelse(grepl('FTT',var),'treadmill',
+                                                     ifelse(grepl('perkcal_',var),'dietary intake',
+                                                     ifelse(grepl('DVIC',var),'vicorder',
+                                                     ifelse(grepl('DHLQ',var),'HLQ','HLQ'))))))))))))))))
+
+df_manhattan_demog$assessment <- as.factor(df_manhattan_demog$assessment)
+df_manhattan_demog_sanscognit <-df_manhattan_demog %>% filter(assessment!="cognition")
+
+df_manhattan_demog_sanscognit$pcat <- df_manhattan_demog_sanscognit$p < 5e-15 
+
+## FDR correction of the participant
+df_manhattan_demog$p_holm <-p.adjust(df_manhattan_demog$p, method = "holm", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_hochberg<-p.adjust(df_manhattan_demog$p, method = "hochberg", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_hommel<-p.adjust(df_manhattan_demog$p, method = "hommel", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_bf<-p.adjust(df_manhattan_demog$p, method = "bonferroni", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_BH<-p.adjust(df_manhattan_demog$p, method = "BH", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_BY<-p.adjust(df_manhattan_demog$p, method = "BY", n=length(df_manhattan_demog$p))
+df_manhattan_demog$p_fdr<-p.adjust(df_manhattan_demog$p, method = "fdr", n=length(df_manhattan_demog$p))
+
+df_manhattan_demog_FDR <- df_manhattan_demog %>% mutate (
+  pcat_holm = case_when(p_holm < 5e-8~"TRUE",T~"FALSE"),
+  pcat_hochberg = case_when(p_hochberg < 5e-8~"TRUE",T~"FALSE"),
+  pcat_hommel = case_when(p_hommel < 5e-8~"TRUE",T~"FALSE"),
+  pcat_bf = case_when(p_bf < 5e-8~"TRUE",T~"FALSE"),
+  pcat_BH = case_when(p_BH < 5e-8~"TRUE",T~"FALSE"),
+  pcat_BY = case_when(p_BY < 5e-8~"TRUE",T~"FALSE"),
+  pcat_fdr = case_when(p_fdr < 5e-8~"TRUE",T~"FALSE")
+)
+
+df_manhattan_demog_sanscognit_FDR <-df_manhattan_demog_FDR %>% filter(assessment!="cognition")
+
+df_manhattan_demog_sanscognit_FDR <-df_manhattan_demog_sanscognit_FDR[order(df_manhattan_demog_sanscognit_FDR$assessment), ]
+
+
+## PheWAS function with beta association or OR, with ancestry
+PheWAS_demog_beta <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+                    FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_female_beta <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_female))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_male_beta <-function(x){
+  y <- summary(lm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_male))
+  y <- as.data.frame(y$coefficients)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_beta <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group +
+             FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_female_beta <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_binary_male_beta <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_bi_male,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+PheWAS_demog_cat_beta <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG7_Gender+ FREG8_Age + FREG5_Ethnic_Group + FREG7_Gender:FREG8_Age + I(FREG8_Age^2) + FREG7_Gender:I(FREG8_Age^2), data= data_HELIOS_manhattan_g_cat,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+PheWAS_demog_cat_female_beta <-function(x){
+  y <- glm(x~ DC7R6_React_Avg_inv+ FREG8_Age + FREG5_Ethnic_Group + I(FREG8_Age^2), data= data_HELIOS_manhattan_g_cat_female,family=binomial)
+  y <- as.data.frame(summary(y)$coef)
+  y$predict <- rownames(y)
+  y <- y %>% filter (predict == "DC7R6_React_Avg_inv") %>% select(1,4)
+  names(y)[2]<-"p"
+  names(y)[1]<-"beta"
+  y$pcat <- y$p < 5e-8 # PENDING FDR #
+  return(y)
+}
+
+
+varlist2_HELIOS_lollipop_g_demog <- lapply(varlist_HELIOS_manhattan_g,PheWAS_demog_beta)
+df_lollipop_demog <- bind_rows(varlist2_HELIOS_lollipop_g_demog, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_demog_female <- lapply(varlist_HELIOS_manhattan_g_female,PheWAS_demog_female_beta)
+df_lollipop_demog_female <- bind_rows(varlist2_HELIOS_lollipop_g_demog_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_demog_male <- lapply(varlist_HELIOS_manhattan_g_male,PheWAS_demog_male_beta)
+df_lollipop_demog_male <- bind_rows(varlist2_HELIOS_lollipop_g_demog_male, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" & var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_bi <- lapply(varlist_HELIOS_manhattan_g_bi,PheWAS_demog_binary_beta)
+df_lollipop_bi <- bind_rows(varlist2_HELIOS_lollipop_g_bi, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_bi_female <- lapply(varlist_HELIOS_manhattan_g_bi_female,PheWAS_demog_binary_female_beta)
+df_lollipop_bi_female <- bind_rows(varlist2_HELIOS_lollipop_g_bi_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_bi_male <- lapply(varlist_HELIOS_manhattan_g_bi_male,PheWAS_demog_binary_male_beta)
+df_lollipop_bi_male <- bind_rows(varlist2_HELIOS_lollipop_g_bi_male, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_cat <- lapply(varlist_HELIOS_manhattan_g_cat,PheWAS_demog_cat_beta)
+df_lollipop_cat <- bind_rows(varlist2_HELIOS_lollipop_g_cat, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!="FREG7_Gender" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+varlist2_HELIOS_lollipop_g_cat_female <- lapply(varlist_HELIOS_manhattan_g_cat_female,PheWAS_demog_cat_female_beta)
+df_lollipop_cat_female <- bind_rows(varlist2_HELIOS_lollipop_g_cat_female, .id = "var") %>%
+  filter (var!="DC7R6_React_Avg_inv" & var!= "FREG8_Age" &  var!="FREG5_Ethnic_Group")
+
+
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_demog_female,df_lollipop_demog_male)
+df_lollipop_bi <- rbind (df_lollipop_bi,df_lollipop_bi_female,df_lollipop_bi_male)
+df_lollipop_cat <- rbind (df_lollipop_cat,df_lollipop_cat_female)
+
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_bi)
+df_lollipop_demog <- rbind (df_lollipop_demog,df_lollipop_cat)
+
+df_lollipop_demog <- df_lollipop_demog %>% mutate (assessment=ifelse(grepl('DBI',var),'bioimpedance',ifelse(grepl('BMI|waist_mean|hip_mean|WHR',var),'anthropometry',
+                                                              ifelse(grepl('Sbp|Dbp|Hr',var),'blood pressure', ifelse(grepl('grip_left|grip_right',var),'hand grip',
+                                                              ifelse(grepl('DDH|DDL|DDWBA|DDWBB',var),'DEXA', ifelse(grepl('DERS',var),'ECG', 
+                                                              ifelse(grepl('DCU',var),'ultrasound', ifelse(grepl('DC7R',var),'cognition',
+                                                              ifelse(grepl('DVAC',var),'visual acuity', ifelse(grepl('DLAB',var),'biochemistry',
+                                                              ifelse(grepl('DSM|Fvc|Fev1|Fev1Fvc|Pef',var),'spirometry', ifelse(grepl('FTT',var),'treadmill',
+                                                              ifelse(grepl('perkcal_',var),'dietary intake',
+                                                              ifelse(grepl('DVIC',var),'vicorder',
+                                                              ifelse(grepl('DHLQ',var),'HLQ','HLQ'))))))))))))))))
+
+df_lollipop_demog$assessment <- as.factor(df_lollipop_demog$assessment)
+df_lollipop_demog_sanscognit <-df_lollipop_demog %>% filter(assessment!="cognition")
+
+df_lollipop_demog_sanscognit$pcat <- df_lollipop_demog_sanscognit$p < 5e-15 
+
+# Convert beta to -1 or +1, so that we can have the indication of direction and simpler diagram
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% mutate (beta_bi=
+                                                                           case_when(beta<=-1.168872e-13~-1,TRUE~1))
+
+df_lollipop_demog_sanscognit$p_fdr<-p.adjust(df_lollipop_demog_sanscognit$p, method = "fdr", n=length(df_lollipop_demog_sanscognit$p))
+
+
+# Remove spurious associations, see 20230919_g_phewas slide deck for further details
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>% filter (var!="DHLQ495_Op4_9" & var !="DHLQ610_L1_Female_7") 
+
+# Export spreadsheet before insertion of empty rows
+data_dictionary <- read_excel("SG100K Data Dictionary - v42_gphewas_varscreen.xlsx",sheet=1) %>% select (10,18,21)
+names(data_dictionary)[1] <- "var"
+data_dictionary <- data_dictionary %>% filter (suitable_for_phewas=="yes") %>% select (-suitable_for_phewas)
+
+df_lollipop_demog_sanscognit_export <- df_lollipop_demog_sanscognit %>% left_join (.,data_dictionary)
+write.csv(df_lollipop_demog_sanscognit_export,"PheWAS_reacttime_demog_quadint_PCances_20240930_table.csv",row.names=F)
+
+# Insert 10 empty rows per assessment to give some space per mini volcano
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%  group_split(assessment) %>%
+  map_dfr(~ .x %>% 
+            add_row(assessment = first(.x$assessment),
+                    var=c("a","b","c","d","e","f","g","h","i","j"),
+                    beta=1, p_fdr=NA,.after = 0))
+df_lollipop_demog_sanscognit$var2<- paste(df_lollipop_demog_sanscognit$var,df_lollipop_demog_sanscognit$assessment)
+
+# Rename the top 20 into more human readable text for labeling
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%
+  mutate(across('var', str_replace, 'DHLQ231_Comp1', 'familiar computer')) %>%
+  mutate(across('var', str_replace, 'DHLQ23_D18', 'TYE')) %>%
+  mutate(across('var', str_replace, 'DHLQ87_D9', 'household income')) %>%
+  mutate(across('var', str_replace, 'DHLQ229_Mb4', 'freq mobile')) %>%
+  mutate(across('var', str_replace, 'DHLQ225_Mb1', 'mobile use year')) %>%
+  mutate(across('var', str_replace, 'DHLQ84_Ho1', 'housing type')) %>%
+  mutate(across('var', str_replace, 'DSM149_PEFmax', 'PEFmax')) %>%
+  mutate(across('var', str_replace, 'DHLQ278_E2', 'self rate eyesight')) %>%
+  mutate(across('var', str_replace, 'DLAB_ln38_Wbc_X10_9_L', 'WBC')) %>%
+  mutate(across('var', str_replace, 'DSM146_FVCmax', 'FVCmax')) %>%
+  mutate(across('var', str_replace, 'DHLQ504_Op4_18', 'myopia')) %>%
+  mutate(across('var', str_replace, 'DHLQ38_Jp1', 'office work')) %>%
+  mutate(across('var', str_replace, 'DHLQ535_Op4_T18', 'myopia treatment')) %>%
+  mutate(across('var', str_replace, 'DBI13_Height', 'height')) %>%
+  mutate(across('var', str_replace, 'DLAB_ln39_Neup_X10_9_L', 'neutrophil')) %>%
+  mutate(across('var', str_replace, 'DHLQ22_D20', 'own car')) %>%
+  mutate(across('var', str_replace, 'DBI178_Tbw_Ffm', 'TBW/FFM')) %>% # additional one only visible in PC ancestry
+mutate(across('var', str_replace, 'DHLQ640_F1B_1', 'family hypertension')) %>% # additional one only visible in reaction time
+mutate(across('var', str_replace, 'DHLQ649_F1B_10', 'family unknown')) %>% # additional one only visible in reaction time
+mutate(across('var', str_replace, 'DHLQ646_F1B_7', 'family cancer')) %>% # additional one only visible in reaction time
+mutate(across('var', str_replace, 'DHLQ581_Sc1M_2', 'cancer screen colon')) %>% # additional one only visible in reaction time
+mutate(across('var', str_replace, 'DHLQ37_J4', 'job area')) %>% # additional one only visible in reaction time
+mutate(across('var', str_replace, 'DHLQ82_D6', 'own house')) # additional one only visible in reaction time
+
+# Switch beta direction because the questions were scaled in opposite direction.
+df_lollipop_demog_sanscognit <- df_lollipop_demog_sanscognit %>%
+  mutate (beta_bi=
+            case_when(var=="familiar computer"~1,
+                      var=="freq mobile"~1,
+                      var=="housing type"~1,
+                      TRUE~beta_bi)) %>%
+  mutate (beta=
+            case_when(var=="familiar computer"~beta*-1,
+                      var=="freq mobile"~beta*-1,
+                      var=="housing type"~beta*-1,
+                      TRUE~beta))
+
+tiff(file="PheWAS_g_demog_quadint_react_DDMMYYYY_FDR.tiff",
+     width=10, height=5, units="in", res=300)
+df_lollipop_demog_sanscognit %>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=-log(p_fdr),colour=assessment,shape=assessment,size=-log(p_fdr))) +
+  theme_classic() + geom_jitter()+
+  xlab("")+ylab("-log(p), FDR adjusted")+
+  scale_shape_manual(values=c(15,1,16,2,17,5,18,6,19,0,15,1,16,2))+
+  geom_text_repel(data=df_lollipop_demog_sanscognit %>% filter(-log(p_fdr)>35),
+                  aes(label=var),color="grey50", size=3.5,
+                  force=5, max.iter=1000, max.overlaps=20) +
+  guides(colour = guide_legend(override.aes = list(size = 3.5))) +
+  guides(shape = guide_legend(override.aes = list(size = 3.5))) +
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),legend.position = "top",legend.title=element_blank())+
+  ggtitle ("PheWAS of reaction time to HELIOS Study variables")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+tiff(file="PheWAS_g_demog_quadint_react_DDMMYYYY_FDR_nolegend.tiff",
+     width=10, height=6, units="in", res=300)
+df_lollipop_demog_sanscognit %>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=-log(p_fdr),colour=assessment,shape=assessment,size=-log(p_fdr))) +
+  theme_classic() + geom_jitter()+
+  xlab("")+ylab("-log(p), FDR adjusted")+
+  scale_shape_manual(values=c(15,1,16,2,17,5,18,6,19,0,15,1,16,2))+
+  geom_text_repel(data=df_lollipop_demog_sanscognit %>% filter(-log(p_fdr)>35),
+                  aes(label=var),color="grey50", size=3.5,
+                  force=5, max.iter=1000, max.overlaps=20) +
+  guides(colour = guide_legend(override.aes = list(size = 3.5))) +
+  guides(shape = guide_legend(override.aes = list(size = 3.5))) +
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),legend.position = "none",legend.title=element_blank())+
+  ylim(0,100)+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+
+tiff(file="PheWAS_g_demog_quadint_react_DDMMYYYY_beta.tiff",
+     width=10, height=2, units="in", res=300)
+df_lollipop_demog_sanscognit%>% group_by (assessment) %>% arrange (beta) %>% distinct (var2,.keep_all = TRUE) %>%
+  mutate (var2= factor(var2, levels = var2)) %>%
+  ggplot(., aes(x= var2,y=beta_bi,colour=assessment)) +
+  theme_classic() +
+  geom_segment(aes(x=var2, xend=var2, y=0, yend=beta_bi))+ylab("beta (binary)")+
+  theme (axis.ticks = element_blank(),axis.text.x=element_blank(),
+         legend.position = "none",
+         axis.title.x=element_blank())+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f anthropometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f biochemistry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f bioimpedance'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f blood pressure'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f DEXA'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f dietary intake'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ECG'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f hand grip'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f HLQ'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f spirometry'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f treadmill'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f ultrasound'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f vicorder'), lty=2,color="grey80")+
+  geom_vline(xintercept=which(df_lollipop_demog_sanscognit$var2 == 'f visual acuity'), lty=2,color="grey80")
+dev.off()
+
+
+############ Hierarchical clustering
+# Need to rerun the manhattan/ lollipop from the main analysis
+# From easiest to most difficult
+corr_treadm <- data_treadm_g %>% select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number) %>%
+  rename_all(~ str_replace_all(., "_","")) %>% rename_all(~ str_sub(., 6)) %>%
+  rename_all(~ str_replace_all(., "Bpm","")) %>% rename_all(~ str_replace_all(., "Percent","%")) %>%
+  cor (.,use = "complete.obs") %>% as.matrix()
+
+corr_treadm_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="treadmill" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"_","")) %>% mutate(var=str_sub(var,6)) %>%
+  mutate(var=str_replace(var,"Bpm","")) %>% mutate(var=str_replace(var,"Percent","%")) %>% column_to_rownames(var="var") %>% as.matrix()
+
+corr_treadm_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="treadmill" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"_","")) %>% mutate(var=str_sub(var,6)) %>%
+  mutate(var=str_replace(var,"Bpm","")) %>% mutate(var=str_replace(var,"Percent","%")) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>% column_to_rownames(var="var") %>% as.matrix()
+
+col <- circlize::colorRamp2(c(-1,0,1), c("blue","white", "coral"))
+tread_hm <- Heatmap (corr_treadm,col=col, name="Pearson's r",       
+         show_column_names= T,show_row_names= T,
+         cluster_rows = T,cluster_columns = T,
+         column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+         rect_gp = grid::gpar(col = "white", lwd = 2),
+         row_km = 3,width = unit(5, "cm"))
+
+col_b <- circlize::colorRamp2(c(-0.06,0,0.06), c("darkolivegreen3","white","darkorange"))
+tread_hmb <- Heatmap (corr_treadm_g,col=col_b, name="beta_g",       
+                      show_column_names= T,show_row_names= T,
+                      cluster_rows = F, cluster_columns = F,
+                      row_order = rownames(corr_treadm_g),
+                      rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                      width = unit(0.5, "cm"))
+
+tread_hmp <- rowAnnotation("-log(p)"=corr_treadm_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+tiff(file="treadmill_g_cluster_p.tiff",
+     width=6, height=5, units="in", res=300)
+tread_hm + tread_hmp + tread_hmb 
+dev.off()
+
+
+corr_vic <-cor(data_vic_g %>% select (-c(FREG0_PID:FREG14_Visit_number)),use = "complete.obs") %>% as.matrix()
+corr_vic_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="vicorder" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"DVIC_","")) %>% column_to_rownames(var="var") %>% as.matrix()
+corr_vic_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="vicorder" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"DVIC_","")) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>% column_to_rownames(var="var") %>% as.matrix()
+
+tiff(file="vic_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_vic, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+vic_hm <-Heatmap (corr_vic,col=col, name="Pearson's r",       
+         show_column_names= T,show_row_names= T,
+         cluster_rows = T,cluster_columns = T,
+         column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+         rect_gp = grid::gpar(col = "white", lwd = 2),
+         row_km = 6,width = unit(7, "cm"))
+vic_hmb <- Heatmap (corr_vic_g,col=col_b, name="beta_g",       
+                      show_column_names= T,show_row_names= T,
+                      cluster_rows = F, cluster_columns = F,
+                      row_order = rownames(corr_vic_g),
+                      rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                      width = unit(0.5, "cm"))
+vic_hmp <- rowAnnotation("-log(p)"=corr_vic_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+tiff(file="vic_g_cluster_p.tiff",
+     width=7, height=6, units="in", res=300)
+vic_hm +  vic_hmp + vic_hmb
+dev.off()
+
+
+corr_imp <- data_imp_g %>% select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number) %>% rename_all(~ str_sub(., 6)) %>%
+  rename_all(~ str_replace_all(., "_","")) %>% rename_all(~ str_replace_all(., "7|8","")) %>% cor () %>% as.matrix()
+corr_imp_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="bioimpedance" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"DBI|_|1|2|3|4|5|6|7|8|9|0","")) %>% column_to_rownames(var="var") %>% as.matrix()
+corr_imp_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="bioimpedance" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"DBI|_|1|2|3|4|5|6|7|8|9|0","")) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+
+tiff(file="imp_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_imp, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+imp_hm <-Heatmap (corr_imp,col=col, name="Pearson's r",       
+                  show_column_names= T,show_row_names= T,
+                  cluster_rows = T,cluster_columns = T,
+                  column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                  rect_gp = grid::gpar(col = "white", lwd = 2),
+                  row_km = 3,width = unit(15, "cm"))
+imp_hmb <- Heatmap (corr_imp_g,col=col_b, name="beta_g",       
+                    show_column_names= T,show_row_names= T,
+                    cluster_rows = F, cluster_columns = F,
+                    row_order = rownames(corr_imp_g),
+                    rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                    width = unit(0.5, "cm"))
+imp_hmp <- rowAnnotation("-log(p)"=corr_imp_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+tiff(file="imp_g_cluster_p.tiff",
+     width=10, height=9, units="in", res=300)
+imp_hm + imp_hmp + imp_hmb
+dev.off()
+
+
+corr_biochem <- data_biochem_g %>% select(-FREG0_PID,-FREG1_Barcode) %>% rename_all(~ str_sub(., 10)) %>%
+  rename_all(~ str_replace_all(., "_","")) %>% rename_all(~ str_replace_all(., "Percent","%")) %>% cor(.,use = "complete.obs") %>% as.matrix()
+corr_biochem_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="biochemistry" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"DLAB_ln|_|1|2|3|4|5|6|7|8|9|0","")) %>% mutate(var=str_replace(var,"Percent","%")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+corr_biochem_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="biochemistry" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"DLAB_ln|_|1|2|3|4|5|6|7|8|9|0","")) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>% mutate(var=str_replace(var,"Percent","%")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+
+
+tiff(file="biochem_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_biochem, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+biochem_hm <-Heatmap (corr_biochem,col=col, name="Pearson's r",       
+                  show_column_names= T,show_row_names= T,
+                  cluster_rows = T,cluster_columns = T,
+                  column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                  rect_gp = grid::gpar(col = "white", lwd = 2),
+                  row_km = 3,width = unit(12, "cm"))
+biochem_hmb <- Heatmap (corr_biochem_g,col=col_b, name="beta_g",       
+                    show_column_names= T,show_row_names= T,
+                    cluster_rows = F, cluster_columns = F,
+                    row_order = rownames(corr_biochem_g),
+                    rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                    width = unit(0.5, "cm"))
+biochem_hmp <- rowAnnotation("-log(p)"=corr_biochem_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+tiff(file="biochem_g_cluster_p.tiff",
+     width=9, height=7, units="in", res=300)
+biochem_hm + biochem_hmp + biochem_hmb
+dev.off()
+
+# DHLQ172_Age,DHLQ467_Age1,DHLQ134_Pa24 should be excluded
+
+corr_hlqsum <- data_core %>% select (FREG0_PID,FREG1_Barcode,FREG14_Visit_number) %>% left_join(.,data_ipaq) %>%
+  left_join(.,data_HLQ_g_sum) %>% replace(is.na(.), 0) %>%
+  dplyr::rename (house_adult_nbr=DHLQ85_D7,house_child_nbr=DHLQ86_D8,caring_hr=DHLQ163_J6A,birthweight=DHLQ269_Y4,rate_eye=DHLQ278_E2,
+                weight_18=DHLQ290_H10A,weight_30=DHLQ291_H10B,parity_male=DHLQ328_M2M,parity_female=DHLQ398_Wh6,
+                agestartsmoke=DHLQ173_S2,agestopsmoke=DHLQ174_S2A,
+                beer_nbr=DHLQ207_A2A,wine_nbr=DHLQ208_A2B,shot_nbr=DHLQ209_A2C,
+                beer25_nbr=DHLQ210_A3A,wine25_nbr=DHLQ211_A3B,shot25_nbr=DHLQ212_A3C,
+                age_diabetes=DHLQ468_Op1B,age_highchol=DHLQ476_Op2A,age_hypertens=DHLQ482_Op3A,
+                education=DHLQ23_D18,work_hr=DHLQ29_J2,house_type=DHLQ84_Ho1,household_income=DHLQ87_D9,
+                family_visit_freq=DHLQ143_So1,
+                smoking=DHLQ171_S1,past_smoke_nbr=DHLQ185_S4Aa,smoke_passive_hr=DHLQ203_S7A,present_smoke_nbr=DHLQ191_S4A,
+                past_smoke20_nbr=DHLQ192_S4A1,past_smoke40_nbr=DHLQ193_S4A2,
+                alcohol=DHLQ204_A1,drink_compare_10=DHLQ214_A7,
+                year_use_mobile=DHLQ225_Mb1,speak_phone_time=DHLQ227_Mb2,speak_handsfree=DHLQ228_Mb2A,mobile_internet_freq=DHLQ229_Mb4,VOIP_freq=DHLQ230_Mb5,
+                comp_fluency=DHLQ231_Comp1,freastfed_dur=DHLQ271_Y8A,self_ratehealth=DHLQ274_Sh1,age_disease_onset=Op4_Age)  %>%
+  filter (FREG14_Visit_number==1) %>%
+  select(-FREG0_PID,-FREG1_Barcode,-FREG14_Visit_number) %>% cor(.,use = "complete.obs", method = "spearman") %>% as.matrix()
+
+corr_hlqsum_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="HLQ" & !is.na(pcat)) %>% select (var,beta) %>%
+  slice_head (n=66) %>% # subject to change after DHLQ172_Age,DHLQ467_Age1,DHLQ134_Pa24 exclusion
+  mutate(across('var', str_replace, 'DHLQ85_D7', 'house_adult_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ86_D8', 'house_child_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ163_J6A', 'caring_hr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ269_Y4', 'birthweight')) %>% 
+  mutate(across('var', str_replace, 'DHLQ278_E2', 'rate_eye')) %>% 
+  mutate(across('var', str_replace, 'DHLQ290_H10A', 'weight_18')) %>% 
+  mutate(across('var', str_replace, 'DHLQ291_H10B', 'weight_30')) %>% 
+  mutate(across('var', str_replace, 'DHLQ328_M2M', 'parity_male')) %>% 
+  mutate(across('var', str_replace, 'DHLQ398_Wh6', 'parity_female')) %>% 
+  mutate(across('var', str_replace, 'DHLQ173_S2', 'agestartsmoke')) %>% 
+  mutate(across('var', str_replace, 'DHLQ174_S2A', 'agestopsmoke')) %>% 
+  mutate(across('var', str_replace, 'DHLQ207_A2A', 'beer_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ208_A2B', 'wine_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ209_A2C', 'shot_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ210_A3A', 'beer25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ211_A3B', 'wine25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ212_A3C', 'shot25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ468_Op1B', 'age_diabetes')) %>%
+  mutate(across('var', str_replace, 'DHLQ476_Op2A', 'age_highchol')) %>%
+  mutate(across('var', str_replace, 'DHLQ482_Op3A', 'age_hypertens')) %>%
+  mutate(across('var', str_replace, 'DHLQ23_D18', 'education')) %>%
+  mutate(across('var', str_replace, 'DHLQ29_J2', 'work_hr')) %>%
+  mutate(across('var', str_replace, 'DHLQ84_Ho1', 'house_type')) %>%
+  mutate(across('var', str_replace, 'DHLQ87_D9', 'household_income')) %>%
+  mutate(across('var', str_replace, 'DHLQ143_So1', 'family_visit_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ171_S1', 'smoking')) %>%
+  mutate(across('var', str_replace, 'DHLQ185_S4Aa', 'past_smoke_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ203_S7A', 'smoke_passive_hr')) %>%
+  mutate(across('var', str_replace, 'DHLQ191_S4A', 'present_smoke_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ192_S4A1', 'past_smoke20_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ193_S4A2', 'past_smoke40_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ204_A1', 'alcohol')) %>%
+  mutate(across('var', str_replace, 'DHLQ214_A7', 'drink_compare_10')) %>%
+  mutate(across('var', str_replace, 'DHLQ225_Mb1', 'year_use_mobile')) %>%
+  mutate(across('var', str_replace, 'DHLQ227_Mb2', 'speak_phone_time')) %>%
+  mutate(across('var', str_replace, 'DHLQ228_Mb2A', 'speak_handsfree')) %>%
+  mutate(across('var', str_replace, 'DHLQ229_Mb4', 'mobile_internet_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ230_Mb5', 'VOIP_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ231_Comp1', 'comp_fluency')) %>%
+  mutate(across('var', str_replace, 'DHLQ271_Y8A', 'freastfed_dur')) %>%
+  mutate(across('var', str_replace, 'DHLQ274_Sh1', 'self_ratehealth')) %>%
+  mutate(across('var', str_replace, 'Op4_Age', 'age_disease_onset')) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+
+corr_hlqsum_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="HLQ" & !is.na(pcat)) %>% select (var,p) %>%
+  slice_head (n=66) %>% # subject to change after DHLQ172_Age,DHLQ467_Age1,DHLQ134_Pa24 exclusion
+  mutate(across('var', str_replace, 'DHLQ85_D7', 'house_adult_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ86_D8', 'house_child_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ163_J6A', 'caring_hr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ269_Y4', 'birthweight')) %>% 
+  mutate(across('var', str_replace, 'DHLQ278_E2', 'rate_eye')) %>% 
+  mutate(across('var', str_replace, 'DHLQ290_H10A', 'weight_18')) %>% 
+  mutate(across('var', str_replace, 'DHLQ291_H10B', 'weight_30')) %>% 
+  mutate(across('var', str_replace, 'DHLQ328_M2M', 'parity_male')) %>% 
+  mutate(across('var', str_replace, 'DHLQ398_Wh6', 'parity_female')) %>% 
+  mutate(across('var', str_replace, 'DHLQ173_S2', 'agestartsmoke')) %>% 
+  mutate(across('var', str_replace, 'DHLQ174_S2A', 'agestopsmoke')) %>% 
+  mutate(across('var', str_replace, 'DHLQ207_A2A', 'beer_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ208_A2B', 'wine_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ209_A2C', 'shot_nbr')) %>% 
+  mutate(across('var', str_replace, 'DHLQ210_A3A', 'beer25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ211_A3B', 'wine25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ212_A3C', 'shot25_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ468_Op1B', 'age_diabetes')) %>%
+  mutate(across('var', str_replace, 'DHLQ476_Op2A', 'age_highchol')) %>%
+  mutate(across('var', str_replace, 'DHLQ482_Op3A', 'age_hypertens')) %>%
+  mutate(across('var', str_replace, 'DHLQ23_D18', 'education')) %>%
+  mutate(across('var', str_replace, 'DHLQ29_J2', 'work_hr')) %>%
+  mutate(across('var', str_replace, 'DHLQ84_Ho1', 'house_type')) %>%
+  mutate(across('var', str_replace, 'DHLQ87_D9', 'household_income')) %>%
+  mutate(across('var', str_replace, 'DHLQ143_So1', 'family_visit_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ171_S1', 'smoking')) %>%
+  mutate(across('var', str_replace, 'DHLQ185_S4Aa', 'past_smoke_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ203_S7A', 'smoke_passive_hr')) %>%
+  mutate(across('var', str_replace, 'DHLQ191_S4A', 'present_smoke_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ192_S4A1', 'past_smoke20_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ193_S4A2', 'past_smoke40_nbr')) %>%
+  mutate(across('var', str_replace, 'DHLQ204_A1', 'alcohol')) %>%
+  mutate(across('var', str_replace, 'DHLQ214_A7', 'drink_compare_10')) %>%
+  mutate(across('var', str_replace, 'DHLQ225_Mb1', 'year_use_mobile')) %>%
+  mutate(across('var', str_replace, 'DHLQ227_Mb2', 'speak_phone_time')) %>%
+  mutate(across('var', str_replace, 'DHLQ228_Mb2A', 'speak_handsfree')) %>%
+  mutate(across('var', str_replace, 'DHLQ229_Mb4', 'mobile_internet_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ230_Mb5', 'VOIP_freq')) %>%
+  mutate(across('var', str_replace, 'DHLQ231_Comp1', 'comp_fluency')) %>%
+  mutate(across('var', str_replace, 'DHLQ271_Y8A', 'freastfed_dur')) %>%
+  mutate(across('var', str_replace, 'DHLQ274_Sh1', 'self_ratehealth')) %>%
+  mutate(across('var', str_replace, 'Op4_Age', 'age_disease_onset')) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+
+
+tiff(file="hlq_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_hlqsum, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+hlq_hm <-Heatmap (corr_hlqsum,col=col, name="Pearson's r",       
+                      show_column_names= T,show_row_names= T,
+                      cluster_rows = T,cluster_columns = T,
+                      column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                      rect_gp = grid::gpar(col = "white", lwd = 2),
+                      row_km = 4,width = unit(18, "cm"))
+hlq_hmb <- Heatmap (corr_hlqsum_g,col=col_b, name="beta_g",       
+                        show_column_names= T,show_row_names= T,
+                        cluster_rows = F, cluster_columns = F,
+                        row_order = rownames(corr_hlqsum_g),
+                        rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                        width = unit(0.5, "cm"))
+hlq_hmp <- rowAnnotation("-log(p)"=corr_hlqsum_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+hlq_g_cluster=hlq_hm + hlq_hmp + hlq_hmb
+set.seed(234) #to keep sequence
+hlq_g_cluster= draw(hlq_g_cluster)
+tiff(file="hlq_g_cluster_p.tiff",
+     width=12, height=11, units="in", res=300)
+hlq_g_cluster
+dev.off()
+
+corr_diet <- data_HELIOS_manhattan_g %>% select(perkcal_bread_white:perkcal_pufa) %>%
+  rename_all(~ str_replace_all(., "perkcal_","")) %>% cor(.,use = "complete.obs") %>% as.matrix()
+corr_diet_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="Dietary_intake" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"perkcal_",""))%>%
+  column_to_rownames(var="var") %>% as.matrix()
+corr_diet_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="Dietary_intake" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"perkcal_",""))%>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+tiff(file="diet_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_diet, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+diet_hm <-Heatmap (corr_diet,col=col, name="Pearson's r",       
+                      show_column_names= T,show_row_names= T,
+                      cluster_rows = T,cluster_columns = T,
+                      column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                      rect_gp = grid::gpar(col = "white", lwd = 2),
+                      row_km = 4,width = unit(12, "cm"))
+diet_hmb <- Heatmap (corr_diet_g,col=col_b, name="beta_g",       
+                        show_column_names= T,show_row_names= T,
+                        cluster_rows = F, cluster_columns = F,
+                        row_order = rownames(corr_diet_g),
+                        rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                        width = unit(0.5, "cm"))
+diet_hmp <- rowAnnotation("-log(p)"=corr_diet_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+diet_g_cluster=diet_hm + diet_hmp + diet_hmb
+set.seed(123) #to keep sequence
+diet_g_cluster= draw(diet_g_cluster)
+tiff(file="diet_g_cluster_p.tiff",
+     width=9, height=7, units="in", res=300)
+diet_g_cluster
+dev.off()
+
+
+corr_dxa <- data_HELIOS_manhattan_g %>% select(DDH23_Neck_Bmd_Gcm2:DDWBA166_Total_Lean_Kgm2) %>%
+  rename_all(~ str_replace_all(., "DDH|DDL|DDWBA|DDWBB|_","")) %>% cor(.,use = "complete.obs") %>% as.matrix()
+corr_dxa_g <- df_lollipop_demog_sanscognit %>% filter (assessment =="DEXA" & !is.na(pcat)) %>% select (var,beta) %>%
+  mutate(var=str_replace_all(var,"DDH|DDL|DDWBA|DDWBB|_|","")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+corr_dxa_p <- df_lollipop_demog_sanscognit %>% filter (assessment =="DEXA" & !is.na(pcat)) %>% select (var,p) %>%
+  mutate(var=str_replace_all(var,"DDH|DDL|DDWBA|DDWBB|_|","")) %>%
+  mutate(p=case_when(p<1.58601E-15~">35",p>=1.58601E-15 & p<1.06865E-13~"30-35",p>=1.06865E-13~"<30")) %>%
+  column_to_rownames(var="var") %>% as.matrix()
+tiff(file="dxa_g_sil.tiff",
+     width=4, height=4, units="in", res=300)
+factoextra::fviz_nbclust(corr_dxa, kmeans, method = "silhouette") # Ideal cluster number evaluation
+dev.off()
+
+dxa_hm <-Heatmap (corr_dxa,col=col, name="Pearson's r",       
+                   show_column_names= T,show_row_names= T,
+                   cluster_rows = T,cluster_columns = T,
+                   column_dend_height = unit(2, "cm"),row_dend_width = unit(2, "cm"),
+                   rect_gp = grid::gpar(col = "white", lwd = 2),
+                   row_km = 3,width = unit(25, "cm"))
+dxa_hmb <- Heatmap (corr_dxa_g,col=col_b, name="beta_g",       
+                     show_column_names= T,show_row_names= T,
+                     cluster_rows = F, cluster_columns = F,
+                     row_order = rownames(corr_dxa_g),
+                     rect_gp = grid::gpar(col = "white", lwd = 2), #set rectangular border
+                     width = unit(0.5, "cm"))
+dxa_hmp <- rowAnnotation("-log(p)"=corr_dxa_p,col=list("-log(p)"=c(">35"="black","30-35"="grey60","<30"="grey90")))
+
+dxa_g_cluster=dxa_hm + dxa_hmp + dxa_hmb
+set.seed(123) #to keep sequence
+dxa_g_cluster= draw(dxa_g_cluster)
+tiff(file="dxa_g_cluster.tiff",
+     width=16, height=13, units="in", res=300)
+dxa_g_cluster
+dev.off()
+
+
+
+
+############ Descriptive of VEP
+g_snp_vep <- read.csv ("[RELEVANT FILE].csv",fileEncoding="UTF-8-BOM", na.strings=c("","NA"))
+
+# donut chart
+donut_variant <- g_snp_vep %>% select (Consequence) %>%
+  group_by(Consequence) %>% dplyr::summarise(n=n()) %>%
+  mutate (total=1804,prop=n/total,ymax=cumsum(prop))
+donut_variant$ymin = c(0, head(donut_variant$ymax, n=-1))
+donut_variant <- donut_variant %>% mutate(Consequence = str_remove(Consequence, "_variant"))
+
+library(wesanderson)
+library(RColorBrewer)
+expand_palette <- function(palette, n) { # Create a function to interpolate colors
+  colorRampPalette(palette)(n)
+}
+palette_wes <- wes_palette("Darjeeling1", n = 5)
+# Expand the palette to 10 colors
+expanded_palette <- expand_palette(palette_wes, 13)
+
+tiff(file="g_snp_vep_donut_conseq.tiff",
+     width=5, height=5, units="in", res=300)
+ggplot (donut_variant,aes(ymax=ymax,ymin=ymin,xmax=2,xmin=-2,fill=Consequence)) +
+  geom_rect(color="white", alpha=0.7) + coord_polar(theta="y",direction = -1) +
+  xlim (c(-8,3)) + theme_void()+
+  scale_fill_manual(values=expanded_palette)+
+  theme(legend.title=element_blank())
+dev.off()
+
+donut_prot <- g_snp_vep %>% select (BIOTYPE) %>%
+  group_by(BIOTYPE) %>% dplyr::summarise(n=n()) %>%
+  mutate (total=1804,prop=n/total,ymax=cumsum(prop))
+donut_prot$ymin = c(0, head(donut_prot$ymax, n=-1))
+
+palette_wes <- wes_palette("Darjeeling1", n = 4)
+expanded_palette <- expand_palette(palette_wes, 16)
+tiff(file="g_snp_vep_donut_biotype.tiff",
+     width=5, height=5, units="in", res=300)
+ggplot (donut_prot,aes(ymax=ymax,ymin=ymin,xmax=2,xmin=-2,fill=BIOTYPE)) +
+  geom_rect(color="white", alpha=0.7) + coord_polar(theta="y",direction = -1) +
+  xlim (c(-8,3)) + theme_void()+
+  scale_fill_manual(values=expanded_palette)+
+  theme(legend.title=element_blank())
+dev.off()
+
+donut_gene <- g_snp_vep %>% select (SYMBOL) %>%
+  group_by(SYMBOL) %>% dplyr::summarise(n=n()) %>%
+  mutate (total=1804,prop=n/total,ymax=cumsum(prop))
+donut_gene$ymin = c(0, head(donut_gene$ymax, n=-1))
